@@ -14,3 +14,4 @@ pymysql==1.1.1
 psycopg2-binary==2.9.10
 stripe==15.2.0
 boto3==1.43.18
+redis==5.0.8

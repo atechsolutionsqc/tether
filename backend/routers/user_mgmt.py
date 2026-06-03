@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from db.database import get_db
 from models.models import User, Role, Permission, UserPermissionOverride
 from schemas.schemas import UserIn, UserOut, UserPermOverride
-from security import get_current_user, CurrentUser, hash_password
+from security import get_current_user, CurrentUser, hash_password, validate_password_strength
 
 router = APIRouter()
 
@@ -53,6 +53,10 @@ def create_user(body: UserIn, db: Session = Depends(get_db),
         raise HTTPException(400, "Email already in use")
     if not body.password:
         raise HTTPException(400, "Password is required")
+    try:
+        validate_password_strength(body.password)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
     role = db.query(Role).get(body.role_id)
     if not role:
         raise HTTPException(400, "Role not found")
@@ -99,9 +103,17 @@ def update_user(uid: int, body: UserIn, db: Session = Depends(get_db),
     u.name = body.name; u.email = body.email
     u.role_id = body.role_id; u.active = body.active
     if body.password:
+        try:
+            validate_password_strength(body.password)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
         u.password_hash = hash_password(body.password)
     if cu.is_msp_staff:
         u.tenant_id = body.tenant_id
+        # Only allow promoting/demoting is_msp_staff flag when the acting user
+        # has the elevated tenants.promote permission (e.g. MSP owner/admin role).
+        if body.is_msp_staff != u.is_msp_staff:
+            cu.require("tenants.promote")
         u.is_msp_staff = body.is_msp_staff
     db.commit(); db.refresh(u)
     return _out(u)

@@ -9,11 +9,11 @@ from db.database import Base
 class Tenant(Base):
     __tablename__ = "tenants"
     id            = Column(Integer, primary_key=True)
-    name          = Column(String, nullable=False)
-    slug          = Column(String, unique=True, nullable=False, index=True)
-    logo_url      = Column(String, default="")
-    accent_color  = Column(String, default="#d4f034")
-    currency      = Column(String, default="USD")
+    name          = Column(String(120), nullable=False)
+    slug          = Column(String(120), unique=True, nullable=False, index=True)
+    logo_url      = Column(String(500), default="")
+    accent_color  = Column(String(20), default="#d4f034")
+    currency      = Column(String(10), default="USD")
     active        = Column(Boolean, default=True)
     created_at    = Column(DateTime, default=datetime.utcnow)
 
@@ -29,15 +29,15 @@ class MspBilling(Base):
     """One row per Tether installation."""
     __tablename__ = "msp_billing"
     id                     = Column(Integer, primary_key=True)
-    tier                   = Column(String, default="trial")
-    billing_interval       = Column(String, default="monthly")
+    tier                   = Column(String(32), default="trial")
+    billing_interval       = Column(String(32), default="monthly")
     trial_ends_at          = Column(DateTime, nullable=True)
-    billing_email          = Column(String, default="")
-    msp_name               = Column(String, default="")
-    notes                  = Column(String, default="")
-    stripe_customer_id     = Column(String, nullable=True)
-    stripe_subscription_id = Column(String, nullable=True)
-    stripe_price_id        = Column(String, nullable=True)
+    billing_email          = Column(String(320), default="")
+    msp_name               = Column(String(120), default="")
+    notes                  = Column(String(1000), default="")
+    stripe_customer_id     = Column(String(255), nullable=True)
+    stripe_subscription_id = Column(String(255), nullable=True)
+    stripe_price_id        = Column(String(255), nullable=True)
     updated_at             = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
@@ -47,7 +47,7 @@ class TenantDomain(Base):
     __tablename__ = "tenant_domains"
     id         = Column(Integer, primary_key=True)
     tenant_id  = Column(Integer, ForeignKey("tenants.id"), nullable=False)
-    domain     = Column(String, unique=True, nullable=False, index=True)
+    domain     = Column(String(255), unique=True, nullable=False, index=True)
     verified   = Column(Boolean, default=False)
     tenant     = relationship("Tenant", back_populates="custom_domains")
 
@@ -57,8 +57,8 @@ class TenantDomain(Base):
 class Permission(Base):
     __tablename__ = "permissions"
     id   = Column(Integer, primary_key=True)
-    key  = Column(String, unique=True, nullable=False)   # e.g. "assets.delete"
-    description = Column(String, default="")
+    key  = Column(String(100), unique=True, nullable=False)   # e.g. "assets.delete"
+    description = Column(String(255), default="")
     role_permissions    = relationship("RolePermission", back_populates="permission", cascade="all, delete-orphan")
     user_overrides      = relationship("UserPermissionOverride", back_populates="permission", cascade="all, delete-orphan")
 
@@ -66,8 +66,8 @@ class Permission(Base):
 class Role(Base):
     __tablename__ = "roles"
     id          = Column(Integer, primary_key=True)
-    name        = Column(String, unique=True, nullable=False)   # "msp_admin", "client_viewer" …
-    description = Column(String, default="")
+    name        = Column(String(80), unique=True, nullable=False)   # "msp_admin", "client_viewer" …
+    description = Column(String(255), default="")
     is_msp_role = Column(Boolean, default=False)   # MSP staff roles vs client roles
     permissions = relationship("RolePermission", back_populates="role", cascade="all, delete-orphan")
     users       = relationship("User", back_populates="role")
@@ -102,9 +102,9 @@ class User(Base):
     id            = Column(Integer, primary_key=True)
     tenant_id     = Column(Integer, ForeignKey("tenants.id"), nullable=True)   # NULL = MSP staff
     role_id       = Column(Integer, ForeignKey("roles.id"), nullable=False)
-    name          = Column(String, nullable=False)
-    email         = Column(String, unique=True, nullable=False, index=True)
-    password_hash = Column(String, nullable=False)
+    name          = Column(String(120), nullable=False)
+    email         = Column(String(320), unique=True, nullable=False, index=True)
+    password_hash = Column(String(255), nullable=False)
     is_msp_staff  = Column(Boolean, default=False)   # can access all tenants
     active        = Column(Boolean, default=True)
     created_at    = Column(DateTime, default=datetime.utcnow)
@@ -122,8 +122,8 @@ class Category(Base):
     __table_args__ = (UniqueConstraint("tenant_id", "name"),)
     id        = Column(Integer, primary_key=True)
     tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
-    name      = Column(String, nullable=False)
-    icon      = Column(String, default="box")
+    name      = Column(String(120), nullable=False)
+    icon      = Column(String(64), default="box")
     assets    = relationship("Asset", back_populates="category")
     tenant    = relationship("Tenant", back_populates="categories")
 
@@ -133,8 +133,8 @@ class Location(Base):
     __table_args__ = (UniqueConstraint("tenant_id", "name"),)
     id        = Column(Integer, primary_key=True)
     tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
-    name      = Column(String, nullable=False)
-    address   = Column(String, default="")
+    name      = Column(String(120), nullable=False)
+    address   = Column(String(255), default="")
     assets    = relationship("Asset", back_populates="location")
     tenant    = relationship("Tenant", back_populates="locations")
 
@@ -143,9 +143,9 @@ class Employee(Base):
     __tablename__ = "employees"
     id        = Column(Integer, primary_key=True)
     tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
-    name      = Column(String, nullable=False)
-    email     = Column(String, default="")
-    department = Column(String, default="")
+    name      = Column(String(120), nullable=False)
+    email     = Column(String(320), default="")
+    department = Column(String(120), default="")
     assets    = relationship("Asset", back_populates="assigned_to")
     tenant    = relationship("Tenant", back_populates="employees")
 
@@ -155,12 +155,12 @@ class Asset(Base):
     __table_args__ = (UniqueConstraint("tenant_id", "asset_tag"),)
     id            = Column(Integer, primary_key=True)
     tenant_id     = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
-    asset_tag     = Column(String, nullable=False, index=True)
-    name          = Column(String, nullable=False)
-    serial        = Column(String, default="")
-    model         = Column(String, default="")
-    manufacturer  = Column(String, default="")
-    status        = Column(String, default="available")
+    asset_tag     = Column(String(100), nullable=False, index=True)
+    name          = Column(String(200), nullable=False)
+    serial        = Column(String(120), default="")
+    model         = Column(String(120), default="")
+    manufacturer  = Column(String(120), default="")
+    status        = Column(String(32), default="available")
     notes         = Column(Text, default="")
     purchase_date = Column(Date, nullable=True)
     purchase_cost = Column(Float, nullable=True)
@@ -185,9 +185,9 @@ class CheckoutLog(Base):
     id            = Column(Integer, primary_key=True)
     asset_id      = Column(Integer, ForeignKey("assets.id"), nullable=False)
     employee_id   = Column(Integer, ForeignKey("employees.id"), nullable=True)
-    employee_name = Column(String, default="")
-    action        = Column(String)
-    note          = Column(String, default="")
+    employee_name = Column(String(120), default="")
+    action        = Column(String(32))
+    note          = Column(String(500), default="")
     timestamp     = Column(DateTime, default=datetime.utcnow)
     asset         = relationship("Asset", back_populates="history")
 
@@ -197,11 +197,11 @@ class CheckoutLog(Base):
 class InviteToken(Base):
     __tablename__ = "invite_tokens"
     id         = Column(Integer, primary_key=True)
-    token      = Column(String, unique=True, nullable=False, index=True)
+    token      = Column(String(255), unique=True, nullable=False, index=True)
     tenant_id  = Column(Integer, ForeignKey("tenants.id"), nullable=False)
     role_id    = Column(Integer, ForeignKey("roles.id"), nullable=False)
-    email      = Column(String, nullable=False)
-    name       = Column(String, default="")
+    email      = Column(String(320), nullable=False)
+    name       = Column(String(120), default="")
     used       = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     expires_at = Column(DateTime, nullable=False)
@@ -216,11 +216,11 @@ class AssetRequest(Base):
     id          = Column(Integer, primary_key=True)
     tenant_id   = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
     requested_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    requested_by_name = Column(String, default="")
-    title       = Column(String, nullable=False)
+    requested_by_name = Column(String(120), default="")
+    title       = Column(String(200), nullable=False)
     description = Column(Text, default="")
-    priority    = Column(String, default="normal")   # low / normal / high / urgent
-    status      = Column(String, default="open")     # open / in_progress / fulfilled / declined
+    priority    = Column(String(20), default="normal")   # low / normal / high / urgent
+    status      = Column(String(20), default="open")     # open / in_progress / fulfilled / declined
     notes       = Column(Text, default="")           # MSP response notes
     created_at  = Column(DateTime, default=datetime.utcnow)
     updated_at  = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

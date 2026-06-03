@@ -16,7 +16,16 @@ async function api(path, opts = {}) {
   const headers = opts.headers || {};
   if (State.token) headers['Authorization'] = `Bearer ${State.token}`;
   if (opts.json) { headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(opts.json); }
-  const res = await fetch('/api' + path, { ...opts, headers });
+
+  // Keep tenant context in local MSP flows where UI uses ?tenant=<slug>.
+  const tenantParam = new URLSearchParams(window.location.search).get('tenant');
+  let apiPath = path;
+  if (tenantParam) {
+    const joiner = apiPath.includes('?') ? '&' : '?';
+    apiPath = `${apiPath}${joiner}tenant=${encodeURIComponent(tenantParam)}`;
+  }
+
+  const res = await fetch('/api' + apiPath, { ...opts, headers });
   if (res.status === 401) { logout(); throw new Error('Session expired'); }
   if (!res.ok) {
     let msg = 'Request failed';
@@ -66,6 +75,102 @@ function openModal(html, wide = false) {
      </div>`;
 }
 function closeModal() { document.getElementById('modal-root').innerHTML = ''; }
+
+// ============ LEGACY INLINE ACTION DISPATCHER ============
+// Existing views render many onclick attributes. Under strict CSP we block
+// inline execution and route click handling through this external script.
+function _splitActionArgs(raw) {
+  const out = [];
+  let cur = '';
+  let quote = null;
+  let depth = 0;
+
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    const prev = i > 0 ? raw[i - 1] : '';
+
+    if (quote) {
+      cur += ch;
+      if (ch === quote && prev !== '\\') quote = null;
+      continue;
+    }
+
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      cur += ch;
+      continue;
+    }
+    if (ch === '(') { depth++; cur += ch; continue; }
+    if (ch === ')') { depth = Math.max(0, depth - 1); cur += ch; continue; }
+
+    if (ch === ',' && depth === 0) {
+      out.push(cur.trim());
+      cur = '';
+      continue;
+    }
+    cur += ch;
+  }
+  if (cur.trim()) out.push(cur.trim());
+  return out;
+}
+
+function _parseActionArg(token) {
+  if (token === 'null') return null;
+  if (token === 'true') return true;
+  if (token === 'false') return false;
+  if (/^-?\d+(\.\d+)?$/.test(token)) return Number(token);
+  if ((token.startsWith('"') && token.endsWith('"')) ||
+      (token.startsWith("'") && token.endsWith("'"))) {
+    return token.slice(1, -1)
+      .replace(/\\'/g, "'")
+      .replace(/\\\"/g, '"')
+      .replace(/\\n/g, '\n')
+      .replace(/\\r/g, '\r')
+      .replace(/\\t/g, '\t')
+      .replace(/\\\\/g, '\\');
+  }
+  // Identifier (e.g. pageTeam, currentBillingInterval)
+  if (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(token)) {
+    if (token in window) return window[token];
+    return undefined;
+  }
+  throw new Error(`Unsupported action token: ${token}`);
+}
+
+function _runInlineAction(code, event, el) {
+  // Keep overlay close behavior used by modal markup.
+  if (code === 'if(event.target===this)closeModal()') {
+    if (event.target === el) closeModal();
+    return;
+  }
+
+  const m = code.match(/^([A-Za-z_$][A-Za-z0-9_$]*)\((.*)\)\s*;?$/);
+  if (!m) throw new Error(`Unsupported action expression: ${code}`);
+
+  const fnName = m[1];
+  const argsRaw = m[2].trim();
+  const fn = window[fnName];
+  if (typeof fn !== 'function') throw new Error(`Action function not found: ${fnName}`);
+
+  const args = argsRaw ? _splitActionArgs(argsRaw).map(_parseActionArg) : [];
+  fn.apply(window, args);
+}
+
+document.addEventListener('click', (event) => {
+  const el = event.target.closest('[onclick]');
+  if (!el) return;
+  const code = (el.getAttribute('onclick') || '').trim();
+  if (!code) return;
+
+  event.preventDefault();
+  event.stopPropagation();
+
+  try {
+    _runInlineAction(code, event, el);
+  } catch (err) {
+    console.error('Action dispatch error:', err, code);
+  }
+}, true);
 
 // ============ HELPERS ============
 function esc(s) {
@@ -136,6 +241,8 @@ async function fetchBranding() {
 
 document.addEventListener('DOMContentLoaded', async () => {
   await fetchBranding();
+  const path = window.location.pathname;
+
   // Signup page
   if (path === '/signup') {
     renderSignupPage();
@@ -143,7 +250,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   // Check if this is a password reset URL
-  const path = window.location.pathname;
   if (path.startsWith('/reset-password/')) {
     renderPasswordResetPage(path.split('/reset-password/')[1]);
     return;

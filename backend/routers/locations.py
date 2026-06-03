@@ -30,17 +30,25 @@ def create(body: LocationIn, db: Session = Depends(get_db), cu: CurrentUser = De
     return _out(l)
 
 @router.put("/{lid}")
-def update(lid: int, body: LocationIn, db: Session = Depends(get_db), cu: CurrentUser = Depends(get_current_user)):
+def update(lid: int, body: LocationIn, db: Session = Depends(get_db), cu: CurrentUser = Depends(get_current_user),
+          tenant_id: Optional[int] = Depends(get_tenant_id)):
     cu.require("locations.manage")
-    l = db.query(Location).get(lid)
+    q = db.query(Location).filter(Location.id == lid)
+    if tenant_id is not None:
+        q = q.filter(Location.tenant_id == tenant_id)
+    l = q.first()
     if not l: raise HTTPException(404, "Not found")
     l.name = body.name; l.address = body.address; db.commit(); db.refresh(l)
     return _out(l)
 
 @router.delete("/{lid}")
-def delete(lid: int, db: Session = Depends(get_db), cu: CurrentUser = Depends(get_current_user)):
+def delete(lid: int, db: Session = Depends(get_db), cu: CurrentUser = Depends(get_current_user),
+          tenant_id: Optional[int] = Depends(get_tenant_id)):
     cu.require("locations.manage")
-    l = db.query(Location).get(lid)
+    q = db.query(Location).filter(Location.id == lid)
+    if tenant_id is not None:
+        q = q.filter(Location.tenant_id == tenant_id)
+    l = q.first()
     if not l: raise HTTPException(404, "Not found")
     if l.assets: raise HTTPException(400, "Location still has assets")
     db.delete(l); db.commit()

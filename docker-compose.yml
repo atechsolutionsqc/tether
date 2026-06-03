@@ -5,14 +5,25 @@ services:
     container_name: tether-db
     restart: unless-stopped
     environment:
-      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-changeme}
+      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?DB_ROOT_PASSWORD must be set}
       MARIADB_DATABASE:      ${DB_NAME:-tether}
       MARIADB_USER:          ${DB_USER:-tether}
-      MARIADB_PASSWORD:      ${DB_PASSWORD:-tether}
+      MARIADB_PASSWORD:      ${DB_PASSWORD:?DB_PASSWORD must be set}
     volumes:
       - tether_db:/var/lib/mysql
     healthcheck:
       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: tether-redis
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -24,24 +35,27 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     ports:
       - "8000:8000"
     volumes:
       - tether_data:/data
     environment:
       # Core
-      - SECRET_KEY=${SECRET_KEY:-please-change-this-in-production}
+      - SECRET_KEY=${SECRET_KEY:?SECRET_KEY must be set}
       - BASE_DOMAIN=${BASE_DOMAIN:-usetether.ca}
       - DEPLOYMENT_MODE=${DEPLOYMENT_MODE:-selfhosted}
+      - RATE_LIMIT_REDIS_URL=${RATE_LIMIT_REDIS_URL:-redis://redis:6379/0}
       # Database — connects to the MariaDB service above
       - DB_HOST=db
       - DB_PORT=3306
       - DB_NAME=${DB_NAME:-tether}
       - DB_USER=${DB_USER:-tether}
-      - DB_PASSWORD=${DB_PASSWORD:-tether}
+      - DB_PASSWORD=${DB_PASSWORD:?DB_PASSWORD must be set}
       # MSP admin account (first run only)
-      - ADMIN_EMAIL=${ADMIN_EMAIL:-admin@usetether.ca}
-      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin}
+      - ADMIN_EMAIL=${ADMIN_EMAIL:?ADMIN_EMAIL must be set}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:?ADMIN_PASSWORD must be set}
       - ADMIN_NAME=${ADMIN_NAME:-MSP Admin}
       # Demo tenant (first run only)
       - DEFAULT_TENANT_SLUG=${DEFAULT_TENANT_SLUG:-demo}

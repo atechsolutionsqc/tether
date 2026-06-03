@@ -25,7 +25,8 @@ from sqlalchemy.orm import relationship
 
 from db.database import Base, get_db
 from models.models import User
-from security import hash_password
+from security import hash_password, validate_password_strength
+from rate_limit import consume
 
 router = APIRouter()
 
@@ -38,7 +39,7 @@ class PasswordResetToken(Base):
     __tablename__ = "password_reset_tokens"
     id         = Column(Integer, primary_key=True)
     user_id    = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    token_hash = Column(String, nullable=False, unique=True)
+    token_hash = Column(String(64), nullable=False, unique=True)
     expires_at = Column(DateTime, nullable=False)
     used       = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -46,19 +47,12 @@ class PasswordResetToken(Base):
     user = relationship("User")
 
 
-# ── Rate limit store (in-memory, per process) ─────────────────────────────────
-# { email: [timestamp, timestamp, ...] }
-_reset_attempts: dict = {}
-
-def _check_rate_limit(email: str) -> None:
-    """Allow max 3 reset requests per email per hour."""
-    now = datetime.utcnow()
-    cutoff = now - timedelta(hours=1)
-    attempts = [t for t in _reset_attempts.get(email, []) if t > cutoff]
-    if len(attempts) >= 3:
+def _check_rate_limit(email: str, ip: str) -> None:
+    """Allow max 3 reset requests per email per hour, with an IP-level guard of 10/hour."""
+    if not consume("password_reset_ip", ip, limit=10, window_sec=60 * 60):
         raise HTTPException(429, "Too many password reset requests. Please wait an hour.")
-    attempts.append(now)
-    _reset_attempts[email] = attempts
+    if not consume("password_reset", email, limit=3, window_sec=60 * 60):
+        raise HTTPException(429, "Too many password reset requests. Please wait an hour.")
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
@@ -97,12 +91,13 @@ def _generate_token(user_id: int, db: Session) -> str:
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.post("/forgot-password")
-def forgot_password(body: ForgotRequest, db: Session = Depends(get_db)):
+def forgot_password(body: ForgotRequest, request: Request, db: Session = Depends(get_db)):
     """
     Request a password reset email. Always returns 200 to avoid
     user enumeration — don't tell the caller if the email exists.
     """
-    _check_rate_limit(body.email.lower())
+    ip = request.client.host if request.client else "unknown"
+    _check_rate_limit(body.email.lower(), ip)
 
     user = db.query(User).filter(
         User.email == body.email.lower()
@@ -150,8 +145,10 @@ def validate_reset_token(token: str, db: Session = Depends(get_db)):
 @router.post("/reset-password")
 def reset_password(body: ResetRequest, db: Session = Depends(get_db)):
     """Consume a token and set a new password."""
-    if len(body.new_password) < 8:
-        raise HTTPException(400, "Password must be at least 8 characters.")
+    try:
+        validate_password_strength(body.new_password)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
 
     record = db.query(PasswordResetToken).filter(
         PasswordResetToken.token_hash == _hash_token(body.token),

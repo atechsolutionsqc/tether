@@ -181,9 +181,9 @@ async function pageAssetDetail() {
         <div class="panel" style="margin-bottom:18px">
           <div class="panel-head"><h3>QR Label</h3></div>
           <div class="panel-body qr-box">
-            <img src="/api/assets/${a.id}/qr" alt="QR code">
+            <img id="asset-qr-img" alt="QR code">
             <p class="muted" style="margin-top:10px;font-size:12.5px">Encodes <span class="tag">${esc(a.asset_tag)}</span></p>
-            <a class="btn btn-ghost btn-sm" style="margin-top:10px" href="/api/assets/${a.id}/qr" download="${esc(a.asset_tag)}.png">${icon('download', 15)}Download</a>
+            <button class="btn btn-ghost btn-sm" style="margin-top:10px" onclick="downloadQr(${a.id}, '${esc(a.asset_tag)}')">${icon('download', 15)}Download</button>
           </div>
         </div>
         <div class="panel">
@@ -192,6 +192,35 @@ async function pageAssetDetail() {
         </div>
       </div>
     </div>`;
+
+  loadQrImage(a.id);
+}
+
+async function loadQrImage(assetId) {
+  const img = document.getElementById('asset-qr-img');
+  if (!img) return;
+  try {
+    const res = await api(`/assets/${assetId}/qr`);
+    const blob = await res.blob();
+    img.src = URL.createObjectURL(blob);
+  } catch (e) {
+    img.alt = 'QR unavailable';
+  }
+}
+
+async function downloadQr(assetId, assetTag) {
+  try {
+    const res = await api(`/assets/${assetId}/qr`);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${assetTag}.png`;
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    toast(e.message || 'Unable to download QR', 'err');
+  }
 }
 
 async function deleteAsset(id) {
@@ -916,7 +945,7 @@ async function pageBillingStripe() {
       ? `<div style="margin-top:10px;font-size:12px;font-weight:600;color:var(--accent-deep)">✓ Current plan</div>`
       : stripeConf.enabled
         ? `<button id="checkout-${t.key}-monthly" class="btn btn-ghost" style="margin-top:12px;width:100%;justify-content:center"
-             onclick="startCheckout('${t.key}', currentBillingInterval)">
+             onclick="startCheckoutCurrent('${t.key}')">
              Upgrade to ${esc(t.name)}
            </button>`
         : `<div style="margin-top:10px;font-size:12px;color:var(--text-muted)">
@@ -974,6 +1003,10 @@ async function pageBillingStripe() {
 }
 
 let currentBillingInterval = 'monthly';
+
+function startCheckoutCurrent(tier) {
+  return startCheckout(tier, currentBillingInterval);
+}
 
 function setBillingInterval(interval) {
   currentBillingInterval = interval;

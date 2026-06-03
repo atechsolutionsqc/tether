@@ -5,6 +5,7 @@ from typing import Optional
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 from sqlalchemy.orm import Session
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -39,6 +40,35 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Tether", version="3.0.0", lifespan=lifespan)
+
+# ── Security headers ──────────────────────────────────────────────────────────
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        csp = "; ".join([
+            "default-src 'self'",
+            "script-src 'self'",
+            # Inline styles are used in generated UI markup.
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+            "font-src 'self' https://fonts.gstatic.com data:",
+            "img-src 'self' data: blob: https:",
+            "connect-src 'self'",
+            "object-src 'none'",
+            "base-uri 'self'",
+            "frame-ancestors 'none'",
+            "form-action 'self'",
+        ])
+        response.headers["Content-Security-Policy"] = csp
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+        if request.url.scheme == "https":
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        return response
+
+app.add_middleware(SecurityHeadersMiddleware)
 
 BASE_DIR     = os.path.dirname(os.path.abspath(__file__))
 FRONTEND_DIR = os.path.join(os.path.dirname(BASE_DIR), "frontend")

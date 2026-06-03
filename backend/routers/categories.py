@@ -33,15 +33,22 @@ def create(body: CategoryIn, db: Session = Depends(get_db), cu: CurrentUser = De
 def update(cid: int, body: CategoryIn, db: Session = Depends(get_db), cu: CurrentUser = Depends(get_current_user),
            tenant_id: Optional[int] = Depends(get_tenant_id)):
     cu.require("categories.manage")
-    c = db.query(Category).get(cid)
+    q = db.query(Category).filter(Category.id == cid)
+    if tenant_id is not None:
+        q = q.filter(Category.tenant_id == tenant_id)
+    c = q.first()
     if not c: raise HTTPException(404, "Not found")
     c.name = body.name; c.icon = body.icon; db.commit(); db.refresh(c)
     return _out(c)
 
 @router.delete("/{cid}")
-def delete(cid: int, db: Session = Depends(get_db), cu: CurrentUser = Depends(get_current_user)):
+def delete(cid: int, db: Session = Depends(get_db), cu: CurrentUser = Depends(get_current_user),
+           tenant_id: Optional[int] = Depends(get_tenant_id)):
     cu.require("categories.manage")
-    c = db.query(Category).get(cid)
+    q = db.query(Category).filter(Category.id == cid)
+    if tenant_id is not None:
+        q = q.filter(Category.tenant_id == tenant_id)
+    c = q.first()
     if not c: raise HTTPException(404, "Not found")
     if c.assets: raise HTTPException(400, "Category still has assets")
     db.delete(c); db.commit()

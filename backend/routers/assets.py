@@ -261,8 +261,11 @@ def history(asset_id: int, db: Session = Depends(get_db),
 
 
 @router.get("/{asset_id}/qr")
-def qr_code(asset_id: int, db: Session = Depends(get_db)):
-    a = db.query(Asset).get(asset_id)
+def qr_code(asset_id: int, db: Session = Depends(get_db),
+           cu: CurrentUser = Depends(get_current_user),
+           tenant_id: Optional[int] = Depends(get_tenant_id)):
+    cu.require("assets.view")
+    a = _q(db, tenant_id).filter(Asset.id == asset_id).first()
     if not a: raise HTTPException(404, "Asset not found")
     img = qrcode.make(a.asset_tag)
     buf = io.BytesIO(); img.save(buf, format="PNG"); buf.seek(0)

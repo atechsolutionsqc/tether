@@ -174,12 +174,14 @@ def _backup_mariadb(db_url: str, db_host: str, timestamp: str):
     cmd = [
         "mysqldump",
         f"--host={host}", f"--port={port}",
-        f"--user={user}", f"--password={pw}",
+        f"--user={user}",
         "--single-transaction", "--routines", "--triggers",
         "--set-gtid-purged=OFF",
         db,
     ]
-    result = subprocess.run(cmd, capture_output=True, timeout=300)
+    # Pass password via env var to avoid exposure in process listings (ps aux)
+    env = {**os.environ, "MYSQL_PWD": pw}
+    result = subprocess.run(cmd, capture_output=True, timeout=300, env=env)
     if result.returncode != 0:
         raise RuntimeError(f"mysqldump failed: {result.stderr.decode()[:200]}")
 
@@ -188,9 +190,20 @@ def _backup_mariadb(db_url: str, db_host: str, timestamp: str):
 
 def _backup_postgres(db_url: str, timestamp: str):
     """Dump PostgreSQL via pg_dump."""
-    cmd = ["pg_dump", "--format=plain", "--no-password", db_url]
+    import urllib.parse
+    parsed = urllib.parse.urlparse(db_url)
+    pg_password = parsed.password or ""
+    # Rebuild the URL without the password so credentials never appear in the
+    # pg_dump command-line argument (visible in ps/audit logs). urlunparse
+    # handles percent-encoded passwords correctly; str.replace on the raw URL
+    # would fail when the decoded password differs from the encoded form.
+    user_part = f"{parsed.username}:@" if parsed.username else ""
+    host_part = parsed.hostname + (f":{parsed.port}" if parsed.port else "")
+    safe_netloc = user_part + host_part
+    safe_url = urllib.parse.urlunparse(parsed._replace(netloc=safe_netloc))
+    cmd = ["pg_dump", "--format=plain", safe_url]
     result = subprocess.run(cmd, capture_output=True, timeout=300,
-                            env={**os.environ, "PGPASSWORD": ""})
+                            env={**os.environ, "PGPASSWORD": pg_password})
     if result.returncode != 0:
         raise RuntimeError(f"pg_dump failed: {result.stderr.decode()[:200]}")
     return result.stdout, f"tether-{timestamp}.sql"

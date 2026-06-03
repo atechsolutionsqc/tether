@@ -10,6 +10,7 @@ Mount in main.py only when DEPLOYMENT_MODE=demo:
       app.include_router(demo_router.router, prefix="/api/admin", tags=["demo"])
 """
 import os
+import hashlib
 from datetime import date, timedelta
 from fastapi import APIRouter, Request, HTTPException
 from sqlalchemy.orm import Session
@@ -25,8 +26,20 @@ router  = APIRouter()
 SECRET  = os.environ.get("RESET_SECRET", "")
 
 
+def _demo_password(env_var: str, purpose: str) -> str:
+    """Read demo password from env; otherwise derive a strong stable value from RESET_SECRET."""
+    pw = (os.environ.get(env_var, "") or "").strip()
+    if pw:
+        return pw
+    # Stable per deployment but not hardcoded in source.
+    seed = f"{SECRET}:{purpose}".encode("utf-8")
+    return f"Aa1-{hashlib.sha256(seed).hexdigest()[:20]}"
+
+
 def _verify(request: Request):
-    if SECRET and request.headers.get("X-Reset-Secret") != SECRET:
+    if not SECRET:
+        raise HTTPException(500, "RESET_SECRET is not configured")
+    if request.headers.get("X-Reset-Secret") != SECRET:
         raise HTTPException(403, "Forbidden")
 
 
@@ -78,12 +91,15 @@ def _seed(db: Session):
     client_mgr_role   = db.query(Role).filter(Role.name == "client_manager").first()
     client_view_role  = db.query(Role).filter(Role.name == "client_viewer").first()
 
+    msp_demo_password = _demo_password("DEMO_MSP_PASSWORD", "msp")
+    client_demo_password = _demo_password("DEMO_CLIENT_PASSWORD", "client")
+
     # ── MSP admin user (keep existing or recreate) ────────────────
     msp_user = db.query(User).filter(User.is_msp_staff == True).first()   # noqa: E712
     if not msp_user:
         msp_user = User(
             name="Demo MSP Admin", email="demo-msp@usetether.ca",
-            password_hash=hash_password("demo1234"),
+            password_hash=hash_password(msp_demo_password),
             role_id=msp_admin_role.id, is_msp_staff=True, tenant_id=None,
         )
         db.add(msp_user)
@@ -139,7 +155,7 @@ def _seed(db: Session):
         client_user = User(
             name="Demo Client User",
             email="demo-client@" + slug + ".demo",
-            password_hash=hash_password("demo1234"),
+            password_hash=hash_password(client_demo_password),
             role_id=client_admin_role.id,
             is_msp_staff=False,
             tenant_id=tenant.id,

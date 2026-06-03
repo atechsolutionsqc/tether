@@ -49,6 +49,7 @@ def list_requests(db: Session = Depends(get_db),
 def create_request(body: RequestIn, db: Session = Depends(get_db),
                    cu: CurrentUser = Depends(get_current_user),
                    tenant_id: Optional[int] = Depends(get_tenant_id)):
+    cu.require("assets.view")
     if tenant_id is None:
         raise HTTPException(400, "Must be in a tenant context to submit a request")
     r = AssetRequest(

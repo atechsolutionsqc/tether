@@ -28,6 +28,7 @@ import smtplib
 import logging
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from html import escape as _e
 from typing import Optional
 
 log = logging.getLogger(__name__)
@@ -243,13 +244,13 @@ def send_welcome(to: str, name: str, login_url: str, role: str) -> bool:
     html_body = f"""
     <h2 style="color:#ffffff;font-size:22px;margin:0 0 12px;font-weight:700;">Welcome to Tether</h2>
     <p style="color:#9ca3af;margin:0 0 24px;line-height:1.7;">
-      Hi {name}, your Tether account has been created with the role
-      <strong style="color:#d4f034;">{role.replace('_', ' ').title()}</strong>.
+      Hi {_e(name)}, your Tether account has been created with the role
+      <strong style="color:#d4f034;">{_e(role.replace('_', ' ').title())}</strong>.
       Click below to log in.
     </p>
     <table cellpadding="0" cellspacing="0" style="margin-bottom:24px;">
       <tr><td style="background:#d4f034;border-radius:8px;">
-        <a href="{login_url}" style="display:inline-block;padding:13px 28px;color:#15171c;font-weight:700;font-size:15px;text-decoration:none;border-radius:8px;">
+        <a href="{_e(login_url)}" style="display:inline-block;padding:13px 28px;color:#15171c;font-weight:700;font-size:15px;text-decoration:none;border-radius:8px;">
           Log in to Tether
         </a>
       </td></tr>
@@ -272,13 +273,13 @@ def send_invite(to: str, name: str, invite_url: str, tenant_name: str, role: str
     html_body = f"""
     <h2 style="color:#ffffff;font-size:22px;margin:0 0 12px;font-weight:700;">You've been invited</h2>
     <p style="color:#9ca3af;margin:0 0 24px;line-height:1.7;">
-      Hi {name}, you've been invited to join <strong style="color:#ffffff;">{tenant_name}</strong>
-      on Tether as a <strong style="color:#d4f034;">{role.replace('_',' ').title()}</strong>.
+      Hi {_e(name)}, you've been invited to join <strong style="color:#ffffff;">{_e(tenant_name)}</strong>
+      on Tether as a <strong style="color:#d4f034;">{_e(role.replace('_',' ').title())}</strong>.
       Click below to accept and set your password.
     </p>
     <table cellpadding="0" cellspacing="0" style="margin-bottom:24px;">
       <tr><td style="background:#d4f034;border-radius:8px;">
-        <a href="{invite_url}" style="display:inline-block;padding:13px 28px;color:#15171c;font-weight:700;font-size:15px;text-decoration:none;border-radius:8px;">
+        <a href="{_e(invite_url)}" style="display:inline-block;padding:13px 28px;color:#15171c;font-weight:700;font-size:15px;text-decoration:none;border-radius:8px;">
           Accept invitation
         </a>
       </td></tr>
@@ -302,9 +303,9 @@ def send_warranty_alert(to: str, name: str, tenant_name: str,
                         expiring: list, login_url: str) -> bool:
     rows = "".join(
         f'<tr>'
-        f'<td style="padding:10px 14px;border-bottom:1px solid #2e3340;color:#c9cdd6;font-size:14px;">{a["asset_tag"]}</td>'
-        f'<td style="padding:10px 14px;border-bottom:1px solid #2e3340;color:#c9cdd6;font-size:14px;">{a["name"]}</td>'
-        f'<td style="padding:10px 14px;border-bottom:1px solid #2e3340;color:#f59e0b;font-size:14px;font-weight:600;">{a["warranty_expiry"]}</td>'
+        f'<td style="padding:10px 14px;border-bottom:1px solid #2e3340;color:#c9cdd6;font-size:14px;">{_e(a["asset_tag"])}</td>'
+        f'<td style="padding:10px 14px;border-bottom:1px solid #2e3340;color:#c9cdd6;font-size:14px;">{_e(a["name"])}</td>'
+        f'<td style="padding:10px 14px;border-bottom:1px solid #2e3340;color:#f59e0b;font-size:14px;font-weight:600;">{_e(str(a["warranty_expiry"]))}</td>'
         f'</tr>'
         for a in expiring
     )
@@ -313,7 +314,7 @@ def send_warranty_alert(to: str, name: str, tenant_name: str,
       Warranties expiring soon
     </h2>
     <p style="color:#9ca3af;margin:0 0 20px;line-height:1.7;">
-      Hi {name}, the following assets in <strong style="color:#ffffff;">{tenant_name}</strong>
+      Hi {_e(name)}, the following assets in <strong style="color:#ffffff;">{_e(tenant_name)}</strong>
       have warranties expiring within the next 30 days.
     </p>
     <table width="100%" cellpadding="0" cellspacing="0"
@@ -329,7 +330,7 @@ def send_warranty_alert(to: str, name: str, tenant_name: str,
     </table>
     <table cellpadding="0" cellspacing="0">
       <tr><td style="background:#d4f034;border-radius:8px;">
-        <a href="{login_url}" style="display:inline-block;padding:12px 24px;color:#15171c;font-weight:700;font-size:14px;text-decoration:none;border-radius:8px;">
+        <a href="{_e(login_url)}" style="display:inline-block;padding:12px 24px;color:#15171c;font-weight:700;font-size:14px;text-decoration:none;border-radius:8px;">
           View assets
         </a>
       </td></tr>

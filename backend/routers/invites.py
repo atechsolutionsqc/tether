@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 from db.database import get_db
 from models.models import InviteToken, User, Role, Tenant
-from security import get_current_user, CurrentUser, hash_password, resolve_tenant_slug
+from security import get_current_user, CurrentUser, hash_password, resolve_tenant_slug, validate_password_strength
 
 router = APIRouter()
 
@@ -41,6 +41,9 @@ def create_invite(body: InviteCreate, db: Session = Depends(get_db),
     if not tenant: raise HTTPException(404, "Tenant not found")
     role = db.query(Role).get(body.role_id)
     if not role: raise HTTPException(404, "Role not found")
+    # Prevent assigning MSP-level roles to client-tenant invites
+    if role.is_msp_role:
+        raise HTTPException(400, "Cannot assign an MSP role when inviting into a client tenant")
 
     # invalidate any existing unused invite for this email+tenant
     db.query(InviteToken).filter(
@@ -113,6 +116,11 @@ def accept_invite(body: AcceptInvite, db: Session = Depends(get_db)):
     if db.query(User).filter(User.email == inv.email).first():
         raise HTTPException(400, "An account with this email already exists")
 
+    try:
+        validate_password_strength(body.password)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
     user = User(
         tenant_id=inv.tenant_id,
         role_id=inv.role_id,
@@ -149,7 +157,15 @@ def list_invites(db: Session = Depends(get_db),
 @router.delete("/{invite_id}")
 def revoke_invite(invite_id: int, db: Session = Depends(get_db),
                   cu: CurrentUser = Depends(get_current_user)):
-    inv = db.query(InviteToken).get(invite_id)
+    if cu.is_msp_staff:
+        cu.require("tenants.manage")
+        inv = db.query(InviteToken).get(invite_id)
+    else:
+        cu.require("users.manage")
+        inv = db.query(InviteToken).filter(
+            InviteToken.id == invite_id,
+            InviteToken.tenant_id == cu.tenant_id,
+        ).first()
     if not inv: raise HTTPException(404, "Invite not found")
     db.delete(inv); db.commit()
     return {"ok": True}

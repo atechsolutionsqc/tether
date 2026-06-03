@@ -1,6 +1,6 @@
 from datetime import date, datetime
 from typing import Optional, List
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -10,16 +10,16 @@ class Token(BaseModel):
 
 class PasswordChange(BaseModel):
     current_password: str
-    new_password: str
+    new_password: str = Field(..., min_length=12, max_length=128)
 
 
 # ── Tenant ────────────────────────────────────────────────────────────────────
 class TenantIn(BaseModel):
-    name: str
-    slug: str
-    logo_url: str = ""
-    accent_color: str = "#d4f034"
-    currency: str = "USD"
+    name: str         = Field(..., min_length=1, max_length=120)
+    slug: str         = Field(..., min_length=1, max_length=60)
+    logo_url: str     = Field("", max_length=500)
+    accent_color: str = Field("#d4f034", max_length=20)
+    currency: str     = Field("USD", max_length=10)
 
 class TenantOut(TenantIn):
     id: int
@@ -33,13 +33,13 @@ class TenantOut(TenantIn):
 
 # ── Users ─────────────────────────────────────────────────────────────────────
 class UserIn(BaseModel):
-    name: str
-    email: str
-    password: Optional[str] = None
+    name: str                   = Field(..., min_length=1, max_length=120)
+    email: str                  = Field(..., max_length=254)
+    password: Optional[str]     = Field(None, max_length=128)
     role_id: int
-    tenant_id: Optional[int] = None
-    is_msp_staff: bool = False
-    active: bool = True
+    tenant_id: Optional[int]    = None
+    is_msp_staff: bool          = False
+    active: bool                = True
 
 class UserOut(BaseModel):
     id: int
@@ -56,7 +56,7 @@ class UserOut(BaseModel):
         from_attributes = True
 
 class UserPermOverride(BaseModel):
-    permission_key: str
+    permission_key: str = Field(..., max_length=80)
     granted: bool
 
 
@@ -73,8 +73,8 @@ class RoleOut(BaseModel):
 
 # ── Category ──────────────────────────────────────────────────────────────────
 class CategoryIn(BaseModel):
-    name: str
-    icon: str = "box"
+    name: str     = Field(..., min_length=1, max_length=80)
+    icon: str     = Field("box", max_length=40)
 
 class CategoryOut(CategoryIn):
     id: int
@@ -85,8 +85,8 @@ class CategoryOut(CategoryIn):
 
 # ── Location ──────────────────────────────────────────────────────────────────
 class LocationIn(BaseModel):
-    name: str
-    address: str = ""
+    name: str    = Field(..., min_length=1, max_length=120)
+    address: str = Field("", max_length=300)
 
 class LocationOut(LocationIn):
     id: int
@@ -97,9 +97,9 @@ class LocationOut(LocationIn):
 
 # ── Employee ──────────────────────────────────────────────────────────────────
 class EmployeeIn(BaseModel):
-    name: str
-    email: str = ""
-    department: str = ""
+    name: str       = Field(..., min_length=1, max_length=120)
+    email: str      = Field("", max_length=254)
+    department: str = Field("", max_length=80)
 
 class EmployeeOut(EmployeeIn):
     id: int
@@ -110,19 +110,19 @@ class EmployeeOut(EmployeeIn):
 
 # ── Asset ─────────────────────────────────────────────────────────────────────
 class AssetIn(BaseModel):
-    asset_tag: str
-    name: str
-    serial: str = ""
-    model: str = ""
-    manufacturer: str = ""
-    status: str = "available"
-    notes: str = ""
-    purchase_date: Optional[date] = None
-    purchase_cost: Optional[float] = None
+    asset_tag:       str            = Field(..., min_length=1, max_length=100)
+    name:            str            = Field(..., min_length=1, max_length=200)
+    serial:          str            = Field("", max_length=100)
+    model:           str            = Field("", max_length=100)
+    manufacturer:    str            = Field("", max_length=100)
+    status:          str            = Field("available", max_length=40)
+    notes:           str            = Field("", max_length=2000)
+    purchase_date:   Optional[date] = None
+    purchase_cost:   Optional[float] = None
     warranty_expiry: Optional[date] = None
-    category_id: Optional[int] = None
-    location_id: Optional[int] = None
-    assigned_to_id: Optional[int] = None
+    category_id:     Optional[int]  = None
+    location_id:     Optional[int]  = None
+    assigned_to_id:  Optional[int]  = None
 
 class AssetOut(AssetIn):
     id: int
@@ -137,7 +137,7 @@ class AssetOut(AssetIn):
 
 class CheckoutIn(BaseModel):
     employee_id: Optional[int] = None
-    note: str = ""
+    note: str = Field("", max_length=500)
 
 class HistoryOut(BaseModel):
     id: int
@@ -151,7 +151,7 @@ class HistoryOut(BaseModel):
 
 # ── Settings ──────────────────────────────────────────────────────────────────
 class SettingsIn(BaseModel):
-    name: str
-    currency: str
-    logo_url: str = ""
-    accent_color: str = "#d4f034"
+    name:         str = Field(..., min_length=1, max_length=120)
+    currency:     str = Field(..., max_length=10)
+    logo_url:     str = Field("", max_length=500)
+    accent_color: str = Field("#d4f034", max_length=20)

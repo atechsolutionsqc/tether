@@ -28,8 +28,6 @@ function renderLogin() {
             <a href="/forgot-password" style="font-size:13px;color:var(--text-muted)">Forgot your password?</a>
           </div>
         </form>
-        ${!isTenant ? `<p style="margin-top:14px;font-size:11.5px;color:var(--text-faint);text-align:center">
-          Default: admin@usetether.ca / admin</p>` : ''}
       </div>
       ${!isTenant ? '' : `<p style="margin-top:16px;font-size:12px;color:rgba(255,255,255,.35);text-align:center">
         Powered by Tether</p>`}
@@ -133,7 +131,8 @@ function buildNav() {
   ];
   if (can('users.manage')) client.push({ id: 'team', label: 'Team', icon: 'lock' });
   client.push({ id: 'settings', label: 'Settings', icon: 'settings' });
-  return isMSP() ? msp : client;
+  const tenantScoped = State.settings?.mode === 'tenant';
+  return (isMSP() && !tenantScoped) ? msp : client;
 }
 
 function renderApp() {
@@ -354,7 +353,7 @@ function drawCharts(s) {
               datasets: [{ data: s.by_category.map(c => c.count), backgroundColor: accent, borderRadius: 6, maxBarThickness: 38 }] },
       options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { precision: 0 }, grid: { color: '#eef0f3' } }, x: { grid: { display: false } } }, responsive: true, maintainAspectRatio: false }
     });
-  } else catEl.parentElement.innerHTML = '<p class="muted">No assets yet.</p>';
+  } else catEl.parentElement.innerHTML = `<p class="muted">${(s.total_assets || 0) > 0 ? 'No categorized assets yet.' : 'No assets yet.'}</p>`;
   const sd = (s.by_status || []).filter(x => x.count > 0);
   if (sd.length) {
     new Chart(stEl, { type: 'doughnut',
@@ -365,8 +364,16 @@ function drawCharts(s) {
 }
 
 function jumpToClient(slug) {
-  const h = location.hostname, port = location.port ? ':' + location.port : '';
-  window.open(`//${slug}.${h}${port}`, '_blank');
+  const h = location.hostname;
+  const port = location.port ? ':' + location.port : '';
+
+  // Localhost development: subdomains may not align with BASE_DOMAIN, so use tenant query scope.
+  if (h === 'localhost' || h === '127.0.0.1') {
+    window.location.href = `${location.protocol}//${h}${port}/?tenant=${encodeURIComponent(slug)}`;
+    return;
+  }
+
+  window.location.href = `//${slug}.${h}${port}`;
 }
 
 // ============ MSP CLIENTS PAGE ============
@@ -522,7 +529,7 @@ async function openInviteForm(tenantId, tenantName) {
                       padding:12px 14px;font-family:var(--mono);font-size:12.5px;word-break:break-all;
                       user-select:all">${esc(full)}</div>
           <button class="btn btn-primary" style="margin-top:14px;width:100%;justify-content:center"
-            onclick="navigator.clipboard.writeText('${esc(full)}').then(()=>toast('Copied!'))">
+            onclick="copyInviteLink('${esc(full)}')">
             ${icon('download', 15)} Copy link
           </button>
         </div>
@@ -597,9 +604,13 @@ async function openClientUsers(tenantId, tenantName) {
       <div class="acts">
         <button class="icon-btn" onclick="openUserForm(${tenantId},${u.id})">${icon('edit', 16)}</button>
         <button class="icon-btn" onclick="openPermEditor(${u.id},'${esc(u.name)}')">${icon('lock', 16)}</button>
-        <button class="icon-btn danger" onclick="deleteUser(${u.id},()=>openClientUsers(${tenantId},'${esc(tenantName)}'))">${icon('trash', 16)}</button>
+        <button class="icon-btn danger" onclick="deleteClientUserAndRefresh(${u.id},${tenantId},'${esc(tenantName)}')">${icon('trash', 16)}</button>
       </div>
     </div>`).join('')}</div>`;
+}
+
+async function deleteClientUserAndRefresh(userId, tenantId, tenantName) {
+  await deleteUser(userId, () => openClientUsers(tenantId, tenantName));
 }
 
 async function openUserForm(tenantId = null, userId = null) {
@@ -723,6 +734,15 @@ async function setPerm(userId, key, granted) {
 async function clearPerm(userId, key) {
   try { await api('/users/' + userId + '/permissions/' + key, { method: 'DELETE' }); openPermEditor(userId, ''); }
   catch (e) { toast(e.message, 'err'); }
+}
+
+async function copyInviteLink(link) {
+  try {
+    await navigator.clipboard.writeText(link);
+    toast('Copied!');
+  } catch (_) {
+    toast('Unable to copy link', 'err');
+  }
 }
 
 // ============ FORGOT PASSWORD PAGE ============

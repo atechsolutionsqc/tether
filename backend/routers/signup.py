@@ -26,8 +26,9 @@ from slugify import slugify
 
 from db.database import get_db
 from models.models import User, Tenant, Category, Location, Role, MspBilling
-from security import hash_password, create_token
+from security import hash_password, validate_password_strength, create_token
 from billing import is_saas
+from rate_limit import consume
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -36,17 +37,10 @@ APP_URL = os.environ.get("APP_URL", "https://usetether.ca")
 # Only allow signup in SaaS mode, or if explicitly enabled on self-hosted
 SIGNUP_ENABLED = is_saas() or os.environ.get("ALLOW_SIGNUP", "false").lower() == "true"
 
-# ── Rate limiting ─────────────────────────────────────────────────────────────
-_signup_attempts: dict = {}
-
 def _check_signup_rate(ip: str) -> None:
-    now    = datetime.utcnow()
-    cutoff = now - timedelta(hours=1)
-    hits   = [t for t in _signup_attempts.get(ip, []) if t > cutoff]
-    if len(hits) >= 5:
+    allowed = consume("signup", ip, limit=5, window_sec=60 * 60)
+    if not allowed:
         raise HTTPException(429, "Too many signup attempts from this IP. Please wait an hour.")
-    hits.append(now)
-    _signup_attempts[ip] = hits
 
 
 # ── Schema ────────────────────────────────────────────────────────────────────
@@ -61,8 +55,10 @@ class SignupRequest(BaseModel):
     @field_validator("password")
     @classmethod
     def password_strength(cls, v: str) -> str:
-        if len(v) < 8:
-            raise ValueError("Password must be at least 8 characters")
+        try:
+            validate_password_strength(v)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
         return v
 
     @field_validator("name")
@@ -164,7 +160,7 @@ def signup(body: SignupRequest, request: Request, db: Session = Depends(get_db))
         log.warning(f"Welcome email failed for {user.email}: {e}")
 
     # Return a login token immediately — no separate login step needed
-    token = create_token(user.id, None, True)
+    token = create_token(user.id, None, True, user.password_hash)
     log.info(f"New MSP signup: {user.email} ({body.msp_name})")
 
     return {

@@ -7,25 +7,25 @@ from db.database import get_db
 from models.models import User
 from schemas.schemas import Token, PasswordChange
 from security import (verify_password, create_token, hash_password,
-                       get_current_user, CurrentUser, resolve_tenant_slug)
+                       get_current_user, CurrentUser, resolve_tenant_slug,
+                       validate_password_strength)
+from rate_limit import is_limited, consume, clear
 
 router = APIRouter()
 
-# ── Login rate limiting ────────────────────────────────────────────────────────
-# Max 10 failed attempts per IP per 5 minutes
-_login_attempts: dict = {}
-
-def _check_login_rate(ip: str) -> None:
-    from datetime import timedelta
-    now    = datetime.utcnow()
-    cutoff = now - timedelta(minutes=5)
-    hits   = [t for t in _login_attempts.get(ip, []) if t > cutoff]
-    if len(hits) >= 10:
+def _check_login_rate(ip: str, email: str) -> None:
+    # IP-level guard: broad limit; not cleared on success so shared-NAT logins
+    # can't reset an attacker's window.
+    if is_limited("login_fail_ip", ip, limit=20):
         raise HTTPException(429, "Too many login attempts. Please wait 5 minutes.")
-    _login_attempts[ip] = hits  # only count failures (appended below)
+    # Per-email guard: tighter limit; cleared on success so a legitimate user's
+    # own earlier typos don't keep blocking them.
+    if is_limited("login_fail", email, limit=10):
+        raise HTTPException(429, "Too many login attempts. Please wait 5 minutes.")
 
-def _record_failed_login(ip: str) -> None:
-    _login_attempts.setdefault(ip, []).append(datetime.utcnow())
+def _record_failed_login(ip: str, email: str) -> None:
+    consume("login_fail_ip", ip, limit=20, window_sec=5 * 60)
+    consume("login_fail", email, limit=10, window_sec=5 * 60)
 
 
 @router.post("/login", response_model=Token)
@@ -34,11 +34,11 @@ def login(request: Request, form: OAuth2PasswordRequestForm = Depends(),
     from models.models import Tenant, TenantDomain
 
     ip = request.client.host if request.client else "unknown"
-    _check_login_rate(ip)
+    _check_login_rate(ip, form.username)
 
     user = db.query(User).filter(User.email == form.username).first()
     if not user or not verify_password(form.password, user.password_hash):
-        _record_failed_login(ip)
+        _record_failed_login(ip, form.username)
         raise HTTPException(status_code=401, detail="Incorrect email or password")
     if not user.active:
         raise HTTPException(status_code=403, detail="Account is inactive")
@@ -56,7 +56,9 @@ def login(request: Request, form: OAuth2PasswordRequestForm = Depends(),
 
     user.last_login = datetime.utcnow()
     db.commit()
-    return Token(access_token=create_token(user.id, user.tenant_id, user.is_msp_staff))
+    clear("login_fail", form.username)  # clear per-email counter only; IP counter is intentionally kept
+    return Token(access_token=create_token(user.id, user.tenant_id, user.is_msp_staff,
+                                           user.password_hash))
 
 
 @router.get("/me")
@@ -83,6 +85,10 @@ def change_password(body: PasswordChange,
     user = db.query(User).get(current_user.id)
     if not verify_password(body.current_password, user.password_hash):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
+    try:
+        validate_password_strength(body.new_password)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     user.password_hash = hash_password(body.new_password)
     db.commit()
     return {"ok": True}
