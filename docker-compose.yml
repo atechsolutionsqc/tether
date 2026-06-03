@@ -1,0 +1,52 @@
+services:
+
+  db:
+    image: mariadb:11
+    container_name: tether-db
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-changeme}
+      MARIADB_DATABASE:      ${DB_NAME:-tether}
+      MARIADB_USER:          ${DB_USER:-tether}
+      MARIADB_PASSWORD:      ${DB_PASSWORD:-tether}
+    volumes:
+      - tether_db:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    container_name: tether-app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    volumes:
+      - tether_data:/data
+    environment:
+      # Core
+      - SECRET_KEY=${SECRET_KEY:-please-change-this-in-production}
+      - BASE_DOMAIN=${BASE_DOMAIN:-usetether.ca}
+      - DEPLOYMENT_MODE=${DEPLOYMENT_MODE:-selfhosted}
+      # Database — connects to the MariaDB service above
+      - DB_HOST=db
+      - DB_PORT=3306
+      - DB_NAME=${DB_NAME:-tether}
+      - DB_USER=${DB_USER:-tether}
+      - DB_PASSWORD=${DB_PASSWORD:-tether}
+      # MSP admin account (first run only)
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-admin@usetether.ca}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin}
+      - ADMIN_NAME=${ADMIN_NAME:-MSP Admin}
+      # Demo tenant (first run only)
+      - DEFAULT_TENANT_SLUG=${DEFAULT_TENANT_SLUG:-demo}
+      - DEFAULT_TENANT_NAME=${DEFAULT_TENANT_NAME:-Demo Client}
+
+volumes:
+  tether_db:    # MariaDB data
+  tether_data:  # App data (uploads, SQLite fallback if used)
