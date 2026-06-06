@@ -70,15 +70,16 @@ class TestUpdateEmployee:
     def test_update_fields(self, client, tenant_headers):
         emp = client.post("/api/employees", json={"name": f"Dave {_uid()}"}, headers=tenant_headers).json()
         uid = _uid()
+        new_name = f"Dave Updated {uid}"
         r = client.put(f"/api/employees/{emp['id']}", json={
-            "name": f"Dave Updated {uid}",
+            "name": new_name,
             "email": f"dave{uid}@updated.com",
             "department": "Operations",
         }, headers=tenant_headers)
         assert r.status_code == 200
         data = r.json()
+        assert data["name"] == new_name
         assert data["department"] == "Operations"
-        assert "updated" in data["name"]
 
     def test_update_not_found(self, client, tenant_headers):
         r = client.put("/api/employees/999999", json={"name": "X"}, headers=tenant_headers)
