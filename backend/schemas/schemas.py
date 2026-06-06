@@ -10,7 +10,7 @@ class Token(BaseModel):
 
 class PasswordChange(BaseModel):
     current_password: str
-    new_password: str = Field(..., min_length=12, max_length=128)
+    new_password: str = Field(..., max_length=128)
 
 
 # ── Tenant ────────────────────────────────────────────────────────────────────

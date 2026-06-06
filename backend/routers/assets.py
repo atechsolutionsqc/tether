@@ -2,7 +2,7 @@ import csv, io
 from datetime import datetime
 from typing import Optional
 import qrcode
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from fastapi import UploadFile, File
 from sqlalchemy.orm import Session
@@ -11,9 +11,9 @@ from sqlalchemy import or_
 from db.database import get_db
 from billing import is_saas, usage_status
 from models.models import MspBilling
-from models.models import Asset, Category, Location, Employee, CheckoutLog
+from models.models import Asset, Category, Location, Employee, CheckoutLog, Tenant, TenantDomain
 from schemas.schemas import AssetIn, AssetOut, CheckoutIn, HistoryOut
-from security import get_current_user, CurrentUser, get_tenant_id
+from security import get_current_user, CurrentUser, get_tenant_id, resolve_tenant_slug
 
 router = APIRouter()
 
@@ -261,12 +261,22 @@ def history(asset_id: int, db: Session = Depends(get_db),
 
 
 @router.get("/{asset_id}/qr")
-def qr_code(asset_id: int, db: Session = Depends(get_db),
-           cu: CurrentUser = Depends(get_current_user),
-           tenant_id: Optional[int] = Depends(get_tenant_id)):
-    cu.require("assets.view")
+def qr_code(asset_id: int, request: Request, db: Session = Depends(get_db)):
+    slug = resolve_tenant_slug(request)
+    if not slug:
+        raise HTTPException(404, "Asset not found")
+    tenant = (
+        db.query(Tenant).filter(Tenant.slug == slug).first() or
+        db.query(TenantDomain)
+        .filter(TenantDomain.domain == slug, TenantDomain.verified.is_(True))
+        .first()
+    )
+    if not tenant:
+        raise HTTPException(404, "Asset not found")
+    tenant_id = tenant.tenant_id if isinstance(tenant, TenantDomain) else tenant.id
     a = _q(db, tenant_id).filter(Asset.id == asset_id).first()
-    if not a: raise HTTPException(404, "Asset not found")
+    if not a:
+        raise HTTPException(404, "Asset not found")
     img = qrcode.make(a.asset_tag)
     buf = io.BytesIO(); img.save(buf, format="PNG"); buf.seek(0)
     return StreamingResponse(buf, media_type="image/png",

@@ -19,6 +19,11 @@ if not SECRET_KEY:
 ALGORITHM          = "HS256"
 TOKEN_EXPIRE_HOURS = 24 * 7
 BASE_DOMAIN        = os.environ.get("BASE_DOMAIN", "localhost")
+DEPLOYMENT_MODE    = os.environ.get("DEPLOYMENT_MODE", "selfhosted").lower()
+ENFORCE_TOKEN_PFP  = os.environ.get(
+    "ENFORCE_TOKEN_PFP",
+    "true" if DEPLOYMENT_MODE == "saas" else "false",
+).lower() == "true"
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/auth/login")
 
@@ -27,14 +32,16 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/auth/login")
 
 def validate_password_strength(password: str) -> None:
     """Raise ValueError if the password does not meet complexity requirements."""
-    if len(password) < 12:
-        raise ValueError("Password must be at least 12 characters")
-    if not re.search(r"[A-Z]", password):
-        raise ValueError("Password must contain at least one uppercase letter")
-    if not re.search(r"[a-z]", password):
-        raise ValueError("Password must contain at least one lowercase letter")
-    if not re.search(r"[0-9]", password):
-        raise ValueError("Password must contain at least one number")
+    min_length = 12 if DEPLOYMENT_MODE == "saas" else 8
+    if len(password) < min_length:
+        raise ValueError(f"Password must be at least {min_length} characters")
+    if DEPLOYMENT_MODE == "saas":
+        if not re.search(r"[A-Z]", password):
+            raise ValueError("Password must contain at least one uppercase letter")
+        if not re.search(r"[a-z]", password):
+            raise ValueError("Password must contain at least one lowercase letter")
+        if not re.search(r"[0-9]", password):
+            raise ValueError("Password must contain at least one number")
 
 
 def hash_password(password: str) -> str:
@@ -134,11 +141,10 @@ def get_current_user(token: str = Depends(oauth2_scheme),
     user = db.query(User).get(int(user_id))
     if not user or not user.active:
         raise HTTPException(status_code=401, detail="User not found or inactive")
-    # Validate password fingerprint — rejects tokens issued before a password change.
-    # Tokens without a pfp claim (pre-patch) are also rejected to enforce the invariant.
-    token_pfp = payload.get("pfp")
-    if token_pfp != _pw_fingerprint(user.password_hash):
-        raise HTTPException(status_code=401, detail="Session expired. Please log in again.")
+    if ENFORCE_TOKEN_PFP:
+        token_pfp = payload.get("pfp")
+        if token_pfp != _pw_fingerprint(user.password_hash):
+            raise HTTPException(status_code=401, detail="Session expired. Please log in again.")
     return CurrentUser(user)
 
 
