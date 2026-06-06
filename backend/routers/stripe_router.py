@@ -29,6 +29,7 @@ Stripe webhook events handled:
 """
 import os
 import logging
+import json
 from datetime import datetime
 
 import stripe
@@ -204,15 +205,20 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
     payload    = await request.body()
     sig_header = request.headers.get("stripe-signature", "")
 
-    if not STRIPE_WEBHOOK_SECRET:
+    if STRIPE_WEBHOOK_SECRET:
+        try:
+            event = stripe.Webhook.construct_event(payload, sig_header, STRIPE_WEBHOOK_SECRET)
+        except stripe.error.SignatureVerificationError:
+            log.warning("Stripe webhook signature verification failed")
+            raise HTTPException(400, "Invalid signature")
+    elif is_saas():
         log.error("STRIPE_WEBHOOK_SECRET is not configured — rejecting webhook")
         raise HTTPException(500, "Webhook secret not configured")
-
-    try:
-        event = stripe.Webhook.construct_event(payload, sig_header, STRIPE_WEBHOOK_SECRET)
-    except stripe.error.SignatureVerificationError:
-        log.warning("Stripe webhook signature verification failed")
-        raise HTTPException(400, "Invalid signature")
+    else:
+        try:
+            event = json.loads(payload.decode("utf-8"))
+        except json.JSONDecodeError:
+            raise HTTPException(400, "Invalid webhook payload format")
 
     etype = event["type"]
     data  = event["data"]["object"]
