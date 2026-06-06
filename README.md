@@ -1,8 +1,6 @@
 # Tether
 
-A simple, modern, self-hostable IT asset management tool. Track hardware, manage check-outs, generate QR labels, and import/export via CSV — all from a clean web interface.
-
-![Dashboard showing 10 assets, charts by category and status, expiring warranties panel]
+A modern, self-hostable IT asset management platform for MSPs and IT teams. Manage multiple client tenants, track hardware, handle check-outs, generate QR labels, and import/export via CSV — all from a clean web interface.
 
 ---
 
@@ -10,12 +8,19 @@ A simple, modern, self-hostable IT asset management tool. Track hardware, manage
 
 - **Asset tracking** — tag, name, serial, model, manufacturer, status, purchase cost, warranty expiry
 - **Check-out / check-in** — assign assets to people with a full audit trail
+- **Asset requests** — employees can submit requests; admins approve or deny
 - **Dashboard** — total assets, value, status breakdown charts, expiring warranties
 - **QR labels** — per-asset QR codes downloadable as PNG
-- **CSV import/export** — bulk-load assets; categories, locations and people are created automatically
+- **CSV import/export** — bulk-load assets; categories, locations, and people are created automatically
 - **Search & filter** — by keyword, status, category, location; sortable columns
-- **Single admin login** — JWT-based auth, change password in Settings
-- **Self-contained** — SQLite database, no external services required
+- **Multi-tenant (MSP)** — manage multiple client organisations from a single instance; each tenant gets its own subdomain
+- **User management** — role-based permissions, per-user overrides, invite-based onboarding
+- **Password reset** — self-service via email token
+- **Billing** — Stripe-backed subscription management
+- **Email notifications** — supports SMTP, Resend, and SendGrid
+- **Warranty alerts** — scheduled alerts for assets expiring within a configurable window
+- **Automated backups** — scheduled S3-compatible backup of the database
+- **Rate limiting** — in-memory or Redis-backed rate limits on auth endpoints
 
 ---
 
@@ -89,7 +94,7 @@ systemctl status tether
 
 | Username | Password |
 |----------|----------|
-| `admin`  | `admin`  |
+| `admin@usetether.ca` | `admin` |
 
 **Change the password immediately** via Settings → Change Password, and set a proper `SECRET_KEY` in `.env` before exposing the app on a network.
 
@@ -97,22 +102,72 @@ systemctl status tether
 
 ## Environment Variables
 
+### Core
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SECRET_KEY` | *(insecure default)* | Secret for signing JWT tokens. Generate with `python -c "import secrets; print(secrets.token_hex(32))"` |
-| `BASE_DOMAIN` | `usetether.ca` | Your root domain. Client subdomains are derived from this — e.g. `acme.usetether.ca` |
+| `BASE_DOMAIN` | `usetether.ca` | Root domain. Client subdomains are derived from this — e.g. `acme.usetether.ca` |
+| `APP_URL` | `https://usetether.ca` | Public URL of the app, used in emails and invite links |
+| `DEPLOYMENT_MODE` | `selfhosted` | Set to `demo` to enable demo mode |
+| `ALLOW_SIGNUP` | `false` | Set to `true` to enable public sign-up |
 | `ADMIN_EMAIL` | `admin@usetether.ca` | Email for the initial MSP admin account (first run only) |
 | `ADMIN_PASSWORD` | `admin` | Password for the initial MSP admin account (first run only) |
 | `ADMIN_NAME` | `MSP Admin` | Display name for the initial MSP admin |
 | `DEFAULT_TENANT_SLUG` | `demo` | Slug for the demo tenant created on first run |
 | `DEFAULT_TENANT_NAME` | `Demo Client` | Name for the demo tenant created on first run |
 | `TETHER_DATA` | `./data` | Directory where the SQLite database is stored |
+
+### Database
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DATABASE_URL` | *(auto-built)* | Full connection string — overrides all `DB_*` vars. Supports `mysql+pymysql://`, `postgresql://`, or `sqlite:///` |
 | `DB_HOST` | *(unset)* | MariaDB/MySQL host. When set, Tether connects to MariaDB instead of SQLite |
 | `DB_PORT` | `3306` | MariaDB/MySQL port |
 | `DB_NAME` | `tether` | Database name |
 | `DB_USER` | *(unset)* | Database username |
 | `DB_PASSWORD` | *(unset)* | Database password |
-| `DATABASE_URL` | *(auto-built)* | Full connection string — overrides all DB_* vars. Supports MariaDB (`mysql+pymysql://`), Postgres (`postgresql://`), or SQLite (`sqlite:///`) |
+
+### Email
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `EMAIL_PROVIDER` | `none` | Email backend: `none`, `smtp`, `resend`, or `sendgrid` |
+| `EMAIL_FROM` | `noreply@usetether.ca` | From address for outgoing emails |
+| `EMAIL_FROM_NAME` | `Tether` | Display name for outgoing emails |
+| `SMTP_HOST` | `localhost` | SMTP server hostname |
+| `SMTP_PORT` | `587` | SMTP port |
+| `SMTP_USER` | *(unset)* | SMTP username |
+| `SMTP_PASSWORD` | *(unset)* | SMTP password |
+| `RESEND_API_KEY` | *(unset)* | API key for Resend |
+| `SENDGRID_API_KEY` | *(unset)* | API key for SendGrid |
+
+### Backup
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BACKUP_ENABLED` | `false` | Set to `true` to enable scheduled S3 backups |
+| `BACKUP_INTERVAL_HOURS` | `24` | How often to run a backup |
+| `BACKUP_RETAIN_DAYS` | `30` | How many days of backups to keep |
+| `BACKUP_S3_BUCKET` | *(unset)* | S3 bucket name |
+| `BACKUP_S3_REGION` | `us-east-1` | S3 region |
+| `BACKUP_S3_PREFIX` | `backups/` | Key prefix for backup objects |
+| `BACKUP_S3_ACCESS_KEY` | *(unset)* | S3 access key |
+| `BACKUP_S3_SECRET_KEY` | *(unset)* | S3 secret key |
+
+### Warranty Alerts
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WARRANTY_ALERTS_ENABLED` | `true` | Send email alerts for expiring warranties |
+| `WARRANTY_ALERT_DAYS` | `30` | Days before expiry to send an alert |
+
+### Rate Limiting
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RATE_LIMIT_REDIS_URL` | *(unset)* | Redis URL for distributed rate limiting. Falls back to in-memory if unset |
 
 ---
 
@@ -190,23 +245,49 @@ IT-0002,Dell Monitor,Dell,U2724DE,,Monitor,Remote,available,,,620,,
 
 ---
 
+## Running Tests
+
+```bash
+pip install -r requirements.txt pytest
+pytest tests/ -v
+```
+
+Tests use SQLite in a temp directory — no database setup required.
+
+---
+
 ## Project Structure
 
 ```
 tether/
 ├── backend/
-│   ├── main.py               # FastAPI app, mounts frontend
-│   ├── security.py           # JWT auth, bcrypt hashing
-│   ├── db/database.py        # SQLite setup, seeding
+│   ├── main.py               # FastAPI app, router registration
+│   ├── security.py           # JWT auth, bcrypt, permissions
+│   ├── email_service.py      # SMTP / Resend / SendGrid abstraction
+│   ├── billing.py            # Billing helpers
+│   ├── backup_service.py     # Scheduled S3 backup
+│   ├── rate_limit.py         # In-memory / Redis rate limiting
+│   ├── scheduler.py          # Warranty alert scheduler
+│   ├── db/database.py        # DB setup, connection, seeding
 │   ├── models/models.py      # SQLAlchemy models
 │   ├── schemas/schemas.py    # Pydantic request/response schemas
 │   └── routers/
 │       ├── auth.py           # Login, /me, change-password
+│       ├── signup.py         # Public sign-up
+│       ├── password_reset.py # Self-service password reset
 │       ├── assets.py         # CRUD, checkout/checkin, QR, CSV
-│       ├── categories.py
-│       ├── locations.py
-│       ├── users.py          # People (employees)
-│       └── dashboard.py      # Stats endpoint
+│       ├── categories.py     # Asset categories
+│       ├── locations.py      # Asset locations
+│       ├── users.py          # People / employees
+│       ├── requests.py       # Asset requests
+│       ├── dashboard.py      # Stats endpoint
+│       ├── tenants.py        # Tenant management
+│       ├── user_mgmt.py      # User CRUD, roles, permissions
+│       ├── invites.py        # Invite-based onboarding
+│       ├── billing_router.py # Billing endpoints
+│       ├── stripe_router.py  # Stripe webhooks
+│       ├── admin_router.py   # Admin panel
+│       └── demo.py           # Demo mode (DEPLOYMENT_MODE=demo only)
 ├── frontend/
 │   ├── templates/index.html  # SPA shell
 │   └── static/
@@ -217,6 +298,23 @@ tether/
 │           ├── views2.js     # Assets, categories, locations, people, settings
 │           ├── icons.js      # Inline SVG icon set
 │           └── chart.umd.js  # Chart.js (vendored, no CDN required)
+├── tests/
+│   ├── conftest.py           # Shared fixtures (client, auth, tenant)
+│   ├── test_admin.py
+│   ├── test_assets.py
+│   ├── test_auth.py
+│   ├── test_billing.py
+│   ├── test_categories.py
+│   ├── test_dashboard.py
+│   ├── test_employees.py
+│   ├── test_locations.py
+│   ├── test_password_reset.py
+│   ├── test_public.py
+│   ├── test_requests.py
+│   ├── test_signup.py
+│   ├── test_stripe.py
+│   ├── test_tenants.py
+│   └── test_users.py
 ├── Dockerfile
 ├── docker-compose.yml
 ├── install.sh
@@ -236,7 +334,7 @@ All endpoints under `/api/*` (except `/api/auth/login` and `/api/assets/{id}/qr`
 
 ## Backup
 
-The entire database is a single file. To back it up:
+The entire database is a single file. To back it up manually:
 
 ```bash
 # Docker
@@ -249,11 +347,14 @@ cp data/tether.db backups/tether-$(date +%Y%m%d).db
 
 To restore, stop the server, replace the file, and restart.
 
+For automated backups to S3, set `BACKUP_ENABLED=true` and the `BACKUP_S3_*` variables in `.env`.
+
 ---
 
 ## Tech Stack
 
-- **Backend:** Python 3.12, FastAPI, SQLAlchemy, SQLite
+- **Backend:** Python 3.12, FastAPI, SQLAlchemy
+- **Database:** SQLite (default) · MariaDB · PostgreSQL
 - **Auth:** bcrypt + JWT (python-jose)
 - **Frontend:** Vanilla JS SPA, Chart.js (vendored)
 - **Fonts:** Bricolage Grotesque + IBM Plex Sans + IBM Plex Mono
