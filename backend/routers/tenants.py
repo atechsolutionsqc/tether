@@ -4,7 +4,17 @@ import audit
 from slugify import slugify
 
 from db.database import get_db
-from models.models import Tenant, TenantDomain, User, Role, Category, Location
+from models.models import (
+    Tenant,
+    TenantDomain,
+    User,
+    Role,
+    Category,
+    Location,
+    InviteToken,
+    AssetRequest,
+    AuditLog,
+)
 from schemas.schemas import TenantIn, TenantOut
 from security import get_current_user, CurrentUser, hash_password
 
@@ -98,6 +108,26 @@ def delete_tenant(tid: int, request: Request,
     t = db.query(Tenant).get(tid)
     if not t:
         raise HTTPException(404, "Tenant not found")
+
+    # Capture tenant-user ids before delete to preserve audit rows that reference
+    # users via actor_id (no cascading FK on audit_logs.actor_id).
+    tenant_user_ids = [uid for (uid,) in db.query(User.id).filter(User.tenant_id == tid).all()]
+    if tenant_user_ids:
+        db.query(AuditLog).filter(AuditLog.actor_id.in_(tenant_user_ids)).update(
+            {AuditLog.actor_id: None},
+            synchronize_session=False,
+        )
+
+    # Keep audit history but detach FK references to the tenant being deleted.
+    db.query(AuditLog).filter(AuditLog.tenant_id == tid).update(
+        {AuditLog.tenant_id: None},
+        synchronize_session=False,
+    )
+
+    # These tables reference tenants but are not attached to Tenant relationships.
+    db.query(InviteToken).filter(InviteToken.tenant_id == tid).delete(synchronize_session=False)
+    db.query(AssetRequest).filter(AssetRequest.tenant_id == tid).delete(synchronize_session=False)
+
     slug, name = t.slug, t.name
     db.delete(t); db.commit()
     audit.log(db, "tenant.delete", actor_id=cu.id, actor_email=cu.email,
