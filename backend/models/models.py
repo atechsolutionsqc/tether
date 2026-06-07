@@ -211,6 +211,22 @@ class InviteToken(Base):
 
 # ── Asset requests (client self-service) ──────────────────────────────────────
 
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+    id          = Column(Integer, primary_key=True)
+    timestamp   = Column(DateTime, default=datetime.utcnow, index=True)
+    actor_id    = Column(Integer, ForeignKey("users.id"), nullable=True)
+    actor_email = Column(String(320), default="")
+    actor_name  = Column(String(120), default="")
+    tenant_id   = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
+    tenant_name = Column(String(120), default="")
+    action      = Column(String(80), nullable=False, index=True)
+    resource    = Column(String(80), default="")
+    resource_id = Column(String(80), default="")
+    detail      = Column(Text, default="")
+    ip_address  = Column(String(64), default="")
+
+
 class AssetRequest(Base):
     __tablename__ = "asset_requests"
     id          = Column(Integer, primary_key=True)

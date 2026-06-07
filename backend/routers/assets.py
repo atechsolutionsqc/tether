@@ -1,4 +1,4 @@
-import csv, io
+import csv, io, math
 from datetime import datetime
 from typing import Optional
 import qrcode
@@ -8,6 +8,7 @@ from fastapi import UploadFile, File
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 
+import audit
 from db.database import get_db
 from billing import is_saas, usage_status
 from models.models import MspBilling
@@ -45,6 +46,8 @@ def _to_out(a: Asset) -> dict:
 def list_assets(q: Optional[str] = None, status: Optional[str] = None,
                 category_id: Optional[int] = None, location_id: Optional[int] = None,
                 sort: str = "asset_tag", order: str = "asc",
+                page: int = Query(1, ge=1),
+                limit: int = Query(50, ge=1, le=200),
                 db: Session = Depends(get_db),
                 cu: CurrentUser = Depends(get_current_user),
                 tenant_id: Optional[int] = Depends(get_tenant_id)):
@@ -60,7 +63,10 @@ def list_assets(q: Optional[str] = None, status: Optional[str] = None,
     if location_id: query = query.filter(Asset.location_id == location_id)
     col = getattr(Asset, sort, Asset.asset_tag)
     query = query.order_by(col.desc() if order == "desc" else col.asc())
-    return [_to_out(a) for a in query.all()]
+    total = query.count()
+    items = [_to_out(a) for a in query.offset((page - 1) * limit).limit(limit).all()]
+    return {"items": items, "total": total, "page": page, "limit": limit,
+            "pages": max(1, math.ceil(total / limit))}
 
 
 @router.get("/export/csv")
@@ -87,6 +93,7 @@ def export_csv(db: Session = Depends(get_db),
 
 @router.post("/import/csv")
 async def import_csv(file: UploadFile = File(...),
+                     request: Request = None,
                      db: Session = Depends(get_db),
                      cu: CurrentUser = Depends(get_current_user),
                      tenant_id: Optional[int] = Depends(get_tenant_id)):
@@ -156,6 +163,11 @@ async def import_csv(file: UploadFile = File(...),
         else:
             db.add(Asset(tenant_id=tenant_id, asset_tag=tag, **fields)); created += 1
     db.commit()
+    audit.log(db, "asset.import", actor_id=cu.id, actor_email=cu.email,
+              actor_name=cu.name, tenant_id=tenant_id,
+              resource="asset",
+              detail=f"Imported {created} created, {updated} updated",
+              ip_address=request.client.host if request and request.client else "")
     return {"created": created, "updated": updated, "errors": errors}
 
 
@@ -170,7 +182,8 @@ def get_asset(asset_id: int, db: Session = Depends(get_db),
 
 
 @router.post("")
-def create_asset(body: AssetIn, db: Session = Depends(get_db),
+def create_asset(body: AssetIn, request: Request,
+                 db: Session = Depends(get_db),
                  cu: CurrentUser = Depends(get_current_user),
                  tenant_id: Optional[int] = Depends(get_tenant_id)):
     cu.require("assets.create")
@@ -189,11 +202,17 @@ def create_asset(body: AssetIn, db: Session = Depends(get_db),
                                      f"({total}/{us['limit']} assets). Please upgrade to add more.")
     a = Asset(tenant_id=tenant_id, **body.model_dump())
     db.add(a); db.commit(); db.refresh(a)
+    audit.log(db, "asset.create", actor_id=cu.id, actor_email=cu.email,
+              actor_name=cu.name, tenant_id=tenant_id,
+              resource="asset", resource_id=a.asset_tag,
+              detail=f"Created {a.name}",
+              ip_address=request.client.host if request.client else "")
     return _to_out(a)
 
 
 @router.put("/{asset_id}")
-def update_asset(asset_id: int, body: AssetIn, db: Session = Depends(get_db),
+def update_asset(asset_id: int, body: AssetIn, request: Request,
+                 db: Session = Depends(get_db),
                  cu: CurrentUser = Depends(get_current_user),
                  tenant_id: Optional[int] = Depends(get_tenant_id)):
     cu.require("assets.edit")
@@ -205,22 +224,35 @@ def update_asset(asset_id: int, body: AssetIn, db: Session = Depends(get_db),
     if dup: raise HTTPException(400, "Asset tag already exists")
     for k, v in body.model_dump().items(): setattr(a, k, v)
     db.commit(); db.refresh(a)
+    audit.log(db, "asset.update", actor_id=cu.id, actor_email=cu.email,
+              actor_name=cu.name, tenant_id=tenant_id,
+              resource="asset", resource_id=a.asset_tag,
+              detail=f"Updated {a.name}",
+              ip_address=request.client.host if request.client else "")
     return _to_out(a)
 
 
 @router.delete("/{asset_id}")
-def delete_asset(asset_id: int, db: Session = Depends(get_db),
+def delete_asset(asset_id: int, request: Request,
+                 db: Session = Depends(get_db),
                  cu: CurrentUser = Depends(get_current_user),
                  tenant_id: Optional[int] = Depends(get_tenant_id)):
     cu.require("assets.delete")
     a = _q(db, tenant_id).filter(Asset.id == asset_id).first()
     if not a: raise HTTPException(404, "Asset not found")
+    tag, name, tid = a.asset_tag, a.name, a.tenant_id
     db.delete(a); db.commit()
+    audit.log(db, "asset.delete", actor_id=cu.id, actor_email=cu.email,
+              actor_name=cu.name, tenant_id=tid,
+              resource="asset", resource_id=tag,
+              detail=f"Deleted {name}",
+              ip_address=request.client.host if request.client else "")
     return {"ok": True}
 
 
 @router.post("/{asset_id}/checkout")
-def checkout(asset_id: int, body: CheckoutIn, db: Session = Depends(get_db),
+def checkout(asset_id: int, body: CheckoutIn, request: Request,
+             db: Session = Depends(get_db),
              cu: CurrentUser = Depends(get_current_user),
              tenant_id: Optional[int] = Depends(get_tenant_id)):
     cu.require("assets.checkout")
@@ -228,15 +260,22 @@ def checkout(asset_id: int, body: CheckoutIn, db: Session = Depends(get_db),
     if not a: raise HTTPException(404, "Asset not found")
     if a.status == "deployed": raise HTTPException(400, "Asset is already checked out")
     emp = db.query(Employee).get(body.employee_id) if body.employee_id else None
+    emp_name = emp.name if emp else ""
     a.assigned_to_id = body.employee_id; a.status = "deployed"
     db.add(CheckoutLog(asset_id=a.id, employee_id=body.employee_id,
-                       employee_name=emp.name if emp else "", action="checkout", note=body.note))
+                       employee_name=emp_name, action="checkout", note=body.note))
     db.commit(); db.refresh(a)
+    audit.log(db, "asset.checkout", actor_id=cu.id, actor_email=cu.email,
+              actor_name=cu.name, tenant_id=tenant_id,
+              resource="asset", resource_id=a.asset_tag,
+              detail=f"Checked out to {emp_name}",
+              ip_address=request.client.host if request.client else "")
     return _to_out(a)
 
 
 @router.post("/{asset_id}/checkin")
-def checkin(asset_id: int, body: CheckoutIn, db: Session = Depends(get_db),
+def checkin(asset_id: int, body: CheckoutIn, request: Request,
+            db: Session = Depends(get_db),
             cu: CurrentUser = Depends(get_current_user),
             tenant_id: Optional[int] = Depends(get_tenant_id)):
     cu.require("assets.checkin")
@@ -246,6 +285,11 @@ def checkin(asset_id: int, body: CheckoutIn, db: Session = Depends(get_db),
     a.assigned_to_id = None; a.status = "available"
     db.add(CheckoutLog(asset_id=a.id, employee_name=prev, action="checkin", note=body.note))
     db.commit(); db.refresh(a)
+    audit.log(db, "asset.checkin", actor_id=cu.id, actor_email=cu.email,
+              actor_name=cu.name, tenant_id=tenant_id,
+              resource="asset", resource_id=a.asset_tag,
+              detail=f"Checked in from {prev}",
+              ip_address=request.client.host if request.client else "")
     return _to_out(a)
 
 

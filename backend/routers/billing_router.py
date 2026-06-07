@@ -4,10 +4,11 @@ All endpoints require MSP staff. In self-hosted mode they still work
 but return saas=false so the UI knows not to show upgrade prompts.
 """
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
+import audit
 from db.database import get_db
 from models.models import Asset, MspBilling
 from security import get_current_user, CurrentUser
@@ -75,13 +76,15 @@ class TierUpdate(BaseModel):
 
 
 @router.put("/tier")
-def update_tier(body: TierUpdate, db: Session = Depends(get_db),
+def update_tier(body: TierUpdate, request: Request,
+                db: Session = Depends(get_db),
                 cu: CurrentUser = Depends(get_current_user)):
     """MSP admin manually sets the active tier (used by you to provision accounts)."""
     cu.require("tenants.manage")
     if body.tier not in TIERS:
         raise HTTPException(400, f"Unknown tier. Valid: {list(TIERS.keys())}")
     row = _billing_row(db)
+    old_tier = row.tier
     row.tier           = body.tier
     row.billing_email  = body.billing_email or row.billing_email
     row.notes          = body.notes or row.notes
@@ -89,4 +92,8 @@ def update_tier(body: TierUpdate, db: Session = Depends(get_db),
     if body.tier not in ("trial",):
         row.trial_ends_at = None
     db.commit()
+    audit.log(db, "billing.tier_change", actor_id=cu.id, actor_email=cu.email,
+              actor_name=cu.name, resource="billing",
+              detail=f"Tier changed from {old_tier} to {body.tier}",
+              ip_address=request.client.host if request.client else "")
     return {"ok": True, "tier": row.tier}

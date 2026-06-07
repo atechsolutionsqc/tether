@@ -1,6 +1,7 @@
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
+import audit
 
 from db.database import get_db
 from models.models import User, Role, Permission, UserPermissionOverride
@@ -39,7 +40,8 @@ def list_users(tenant_id: Optional[int] = None,
 
 
 @router.post("")
-def create_user(body: UserIn, db: Session = Depends(get_db),
+def create_user(body: UserIn, request: Request,
+                db: Session = Depends(get_db),
                 cu: CurrentUser = Depends(get_current_user)):
     # MSP staff can create any user; client admins only within their tenant
     if cu.is_msp_staff:
@@ -70,6 +72,11 @@ def create_user(body: UserIn, db: Session = Depends(get_db),
         active=body.active,
     )
     db.add(u); db.commit(); db.refresh(u)
+    audit.log(db, "user.create", actor_id=cu.id, actor_email=cu.email,
+              actor_name=cu.name, tenant_id=u.tenant_id,
+              resource="user", resource_id=u.email,
+              detail=f"Created user {u.name}",
+              ip_address=request.client.host if request.client else "")
 
     try:
         import os
@@ -84,7 +91,8 @@ def create_user(body: UserIn, db: Session = Depends(get_db),
 
 
 @router.put("/{uid}")
-def update_user(uid: int, body: UserIn, db: Session = Depends(get_db),
+def update_user(uid: int, body: UserIn, request: Request,
+                db: Session = Depends(get_db),
                 cu: CurrentUser = Depends(get_current_user)):
     u = db.query(User).get(uid)
     if not u:
@@ -100,6 +108,7 @@ def update_user(uid: int, body: UserIn, db: Session = Depends(get_db),
     dup = db.query(User).filter(User.email == body.email, User.id != uid).first()
     if dup:
         raise HTTPException(400, "Email already in use")
+    was_active = u.active
     u.name = body.name; u.email = body.email
     u.role_id = body.role_id; u.active = body.active
     if body.password:
@@ -116,11 +125,18 @@ def update_user(uid: int, body: UserIn, db: Session = Depends(get_db),
             cu.require("tenants.promote")
         u.is_msp_staff = body.is_msp_staff
     db.commit(); db.refresh(u)
+    action = "user.deactivate" if was_active and not u.active else "user.update"
+    audit.log(db, action, actor_id=cu.id, actor_email=cu.email,
+              actor_name=cu.name, tenant_id=u.tenant_id,
+              resource="user", resource_id=u.email,
+              detail=f"{'Deactivated' if action == 'user.deactivate' else 'Updated'} user {u.name}",
+              ip_address=request.client.host if request.client else "")
     return _out(u)
 
 
 @router.delete("/{uid}")
-def delete_user(uid: int, db: Session = Depends(get_db),
+def delete_user(uid: int, request: Request,
+                db: Session = Depends(get_db),
                 cu: CurrentUser = Depends(get_current_user)):
     u = db.query(User).get(uid)
     if not u:
@@ -133,7 +149,13 @@ def delete_user(uid: int, db: Session = Depends(get_db),
             raise HTTPException(403, "Cannot delete user from another tenant")
     if u.id == cu.id:
         raise HTTPException(400, "Cannot delete your own account")
+    email, name, tid = u.email, u.name, u.tenant_id
     db.delete(u); db.commit()
+    audit.log(db, "user.delete", actor_id=cu.id, actor_email=cu.email,
+              actor_name=cu.name, tenant_id=tid,
+              resource="user", resource_id=email,
+              detail=f"Deleted user {name}",
+              ip_address=request.client.host if request.client else "")
     return {"ok": True}
 
 

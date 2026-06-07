@@ -10,6 +10,7 @@ from security import (verify_password, create_token, hash_password,
                        get_current_user, CurrentUser, resolve_tenant_slug,
                        validate_password_strength)
 from rate_limit import is_limited, consume, clear
+import audit
 
 router = APIRouter()
 
@@ -39,6 +40,8 @@ def login(request: Request, form: OAuth2PasswordRequestForm = Depends(),
     user = db.query(User).filter(User.email == form.username).first()
     if not user or not verify_password(form.password, user.password_hash):
         _record_failed_login(ip, form.username)
+        audit.log(db, "auth.login_failed", resource_id=form.username,
+                  detail="Failed login attempt", ip_address=ip)
         raise HTTPException(status_code=401, detail="Incorrect email or password")
     if not user.active:
         raise HTTPException(status_code=403, detail="Account is inactive")
@@ -57,6 +60,9 @@ def login(request: Request, form: OAuth2PasswordRequestForm = Depends(),
     user.last_login = datetime.utcnow()
     db.commit()
     clear("login_fail", form.username)  # clear per-email counter only; IP counter is intentionally kept
+    audit.log(db, "auth.login", actor_id=user.id, actor_email=user.email,
+              actor_name=user.name, tenant_id=user.tenant_id,
+              resource_id=user.email, ip_address=ip)
     return Token(access_token=create_token(user.id, user.tenant_id, user.is_msp_staff,
                                            user.password_hash))
 

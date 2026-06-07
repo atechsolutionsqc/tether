@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
+import audit
 from db.database import get_db
 from models.models import InviteToken, User, Role, Tenant
 from security import get_current_user, CurrentUser, hash_password, resolve_tenant_slug, validate_password_strength
@@ -62,6 +63,10 @@ def create_invite(body: InviteCreate, db: Session = Depends(get_db),
         expires_at=datetime.utcnow() + timedelta(hours=body.expires_hours),
     )
     db.add(inv); db.commit()
+    audit.log(db, "invite.create", actor_id=cu.id, actor_email=cu.email,
+              actor_name=cu.name, tenant_id=body.tenant_id,
+              tenant_name=tenant.name, resource="invite",
+              resource_id=body.email, detail=f"Invited {body.email} to {tenant.name}")
 
     invite_url = f"{os.environ.get('APP_URL', 'https://usetether.ca')}/invite/{token}"
 
@@ -133,6 +138,10 @@ def accept_invite(body: AcceptInvite, db: Session = Depends(get_db)):
     db.add(user)
     inv.used = True
     db.commit()
+    audit.log(db, "invite.accept", actor_id=user.id, actor_email=user.email,
+              actor_name=user.name, tenant_id=inv.tenant_id,
+              tenant_name=inv.tenant.name, resource="invite",
+              resource_id=inv.email, detail=f"Accepted invite for {inv.email}")
     return {"ok": True, "email": inv.email, "tenant_slug": inv.tenant.slug}
 
 

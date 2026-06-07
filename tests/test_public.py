@@ -101,6 +101,21 @@ class TestDemoEndpoint:
         assert "password" in data["msp"]
 
 
+class TestHealth:
+    def test_health_returns_ok(self, client):
+        r = client.get("/api/health")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["status"] == "ok"
+        assert "database" in data
+        assert "version" in data
+        assert "deployment_mode" in data
+
+    def test_health_no_auth_required(self, client):
+        r = client.get("/api/health")
+        assert r.status_code == 200
+
+
 class TestSwaggerDocs:
     def test_swagger_ui_available(self, client):
         r = client.get("/docs")

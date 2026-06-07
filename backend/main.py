@@ -6,6 +6,7 @@ from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from starlette.middleware.base import BaseHTTPMiddleware
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -21,6 +22,7 @@ from routers import billing_router
 from routers import password_reset as pw_reset_router
 from routers import stripe_router, signup as signup_router
 from routers import admin_router
+from routers import reports as reports_router
 
 
 @asynccontextmanager
@@ -89,6 +91,7 @@ app.include_router(pw_reset_router.router,  prefix="/api/auth",       tags=["aut
 app.include_router(signup_router.router,    prefix="/api/auth",       tags=["auth"])
 app.include_router(stripe_router.router,    prefix="/api/stripe",     tags=["stripe"])
 app.include_router(admin_router.router,     prefix="/api/admin",      tags=["admin"])
+app.include_router(reports_router.router,   prefix="/api/reports",    tags=["reports"])
 
 
 # ── Public: tenant branding (for white-label login page) ─────────────────────
@@ -164,6 +167,22 @@ def update_settings(body: SettingsIn, db: Session = Depends(get_db),
     t.logo_url = body.logo_url; t.accent_color = body.accent_color
     db.commit()
     return {"ok": True}
+
+
+# ── Health check (no auth required) ─────────────────────────────────────────
+@app.get("/api/health")
+def health(db: Session = Depends(get_db)):
+    try:
+        db.execute(text("SELECT 1"))
+        db_status = "ok"
+    except Exception:
+        raise HTTPException(503, "Database unavailable")
+    return {
+        "status": "ok",
+        "version": "1.0.0",
+        "database": db_status,
+        "deployment_mode": os.environ.get("DEPLOYMENT_MODE", "selfhosted"),
+    }
 
 
 # ── Demo mode (mounted only when DEPLOYMENT_MODE=demo) ───────────────────────

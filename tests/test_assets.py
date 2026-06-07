@@ -53,8 +53,9 @@ class TestReadAsset:
     def test_list_assets(self, client, tenant_headers, fresh_asset):
         r = client.get("/api/assets", headers=tenant_headers)
         assert r.status_code == 200
-        assert isinstance(r.json(), list)
-        tags = [a["asset_tag"] for a in r.json()]
+        data = r.json()
+        assert "items" in data and "total" in data
+        tags = [a["asset_tag"] for a in data["items"]]
         assert fresh_asset["asset_tag"] in tags
 
     def test_get_asset_by_id(self, client, tenant_headers, fresh_asset):
@@ -74,12 +75,12 @@ class TestReadAsset:
         }, headers=tenant_headers)
         r = client.get(f"/api/assets?q={tag}", headers=tenant_headers)
         assert r.status_code == 200
-        assert any(a["asset_tag"] == tag for a in r.json())
+        assert any(a["asset_tag"] == tag for a in r.json()["items"])
 
     def test_filter_by_status(self, client, tenant_headers):
         r = client.get("/api/assets?status=available", headers=tenant_headers)
         assert r.status_code == 200
-        for asset in r.json():
+        for asset in r.json()["items"]:
             assert asset["status"] == "available"
 
 
@@ -251,5 +252,74 @@ class TestCrossTenantIsolation:
         other_h = {**auth, "host": f"{slug}.localhost"}
         r = client.get("/api/assets", headers=other_h)
         assert r.status_code == 200
-        asset_tags = [a["asset_tag"] for a in r.json()]
+        asset_tags = [a["asset_tag"] for a in r.json()["items"]]
         assert fresh_asset["asset_tag"] not in asset_tags
+
+
+class TestPagination:
+    def test_response_shape(self, client, tenant_headers, fresh_asset):
+        r = client.get("/api/assets", headers=tenant_headers)
+        assert r.status_code == 200
+        data = r.json()
+        assert "items" in data
+        assert "total" in data
+        assert "page" in data
+        assert "limit" in data
+        assert "pages" in data
+        assert isinstance(data["items"], list)
+        assert data["total"] >= 1
+        assert data["page"] == 1
+        assert data["pages"] == max(1, -(-data["total"] // data["limit"]))  # ceil division
+
+    def test_page_2_differs_from_page_1(self, client, tenant_headers):
+        tags = [_tag() for _ in range(3)]
+        for tag in tags:
+            client.post("/api/assets", json={
+                "asset_tag": tag, "name": f"Pageable {tag}", "status": "available",
+            }, headers=tenant_headers)
+
+        r1 = client.get("/api/assets?limit=1&page=1&sort=asset_tag&order=asc", headers=tenant_headers)
+        r2 = client.get("/api/assets?limit=1&page=2&sort=asset_tag&order=asc", headers=tenant_headers)
+        assert r1.status_code == 200
+        assert r2.status_code == 200
+        d1, d2 = r1.json(), r2.json()
+        assert d1["total"] == d2["total"]
+        assert d1["items"] != d2["items"]
+
+    def test_limit_clamps_result_count(self, client, tenant_headers):
+        for _ in range(3):
+            client.post("/api/assets", json={
+                "asset_tag": _tag(), "name": "Limitable", "status": "available",
+            }, headers=tenant_headers)
+
+        r = client.get("/api/assets?limit=2", headers=tenant_headers)
+        assert r.status_code == 200
+        assert len(r.json()["items"]) <= 2
+
+    def test_filter_and_pagination_combined(self, client, tenant_headers):
+        uid = int(time.time() * 1000) % 999999
+        for i in range(3):
+            client.post("/api/assets", json={
+                "asset_tag": f"PAG-{uid}-{i}", "name": f"PagFilter {i}",
+                "status": "maintenance",
+            }, headers=tenant_headers)
+
+        r = client.get("/api/assets?status=maintenance&limit=1&page=1", headers=tenant_headers)
+        assert r.status_code == 200
+        data = r.json()
+        assert data["total"] >= 3
+        assert len(data["items"]) == 1
+        assert data["items"][0]["status"] == "maintenance"
+
+    def test_csv_export_ignores_pagination(self, client, tenant_headers):
+        for _ in range(3):
+            client.post("/api/assets", json={
+                "asset_tag": _tag(), "name": "CSVCheck", "status": "available",
+            }, headers=tenant_headers)
+
+        r_csv = client.get("/api/assets/export/csv", headers=tenant_headers)
+        r_list = client.get("/api/assets?limit=1", headers=tenant_headers)
+        assert r_csv.status_code == 200
+        # CSV row count (minus header) should equal total from the paginated endpoint
+        csv_rows = [line for line in r_csv.text.strip().splitlines() if line][1:]
+        assert len(csv_rows) == r_list.json()["total"]

@@ -1,5 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
+import audit
 from slugify import slugify
 
 from db.database import get_db
@@ -29,7 +30,8 @@ def list_tenants(db: Session = Depends(get_db),
 
 
 @router.post("")
-def create_tenant(body: TenantIn, db: Session = Depends(get_db),
+def create_tenant(body: TenantIn, request: Request,
+                  db: Session = Depends(get_db),
                   cu: CurrentUser = Depends(get_current_user)):
     cu.require("tenants.manage")
     slug = slugify(body.slug or body.name)
@@ -48,6 +50,10 @@ def create_tenant(body: TenantIn, db: Session = Depends(get_db),
         db.add(Location(tenant_id=t.id, name=lname))
     db.commit()
     db.refresh(t)
+    audit.log(db, "tenant.create", actor_id=cu.id, actor_email=cu.email,
+              actor_name=cu.name, tenant_id=t.id, tenant_name=t.name,
+              resource="tenant", resource_id=slug,
+              ip_address=request.client.host if request.client else "")
     return _out(t, db)
 
 
@@ -62,7 +68,8 @@ def get_tenant(tid: int, db: Session = Depends(get_db),
 
 
 @router.put("/{tid}")
-def update_tenant(tid: int, body: TenantIn, db: Session = Depends(get_db),
+def update_tenant(tid: int, body: TenantIn, request: Request,
+                  db: Session = Depends(get_db),
                   cu: CurrentUser = Depends(get_current_user)):
     cu.require("tenants.manage")
     t = db.query(Tenant).get(tid)
@@ -76,17 +83,27 @@ def update_tenant(tid: int, body: TenantIn, db: Session = Depends(get_db),
     t.accent_color = body.accent_color; t.currency = body.currency
     db.commit()
     db.refresh(t)
+    audit.log(db, "tenant.update", actor_id=cu.id, actor_email=cu.email,
+              actor_name=cu.name, tenant_id=t.id, tenant_name=t.name,
+              resource="tenant", resource_id=slug,
+              ip_address=request.client.host if request.client else "")
     return _out(t, db)
 
 
 @router.delete("/{tid}")
-def delete_tenant(tid: int, db: Session = Depends(get_db),
+def delete_tenant(tid: int, request: Request,
+                  db: Session = Depends(get_db),
                   cu: CurrentUser = Depends(get_current_user)):
     cu.require("tenants.manage")
     t = db.query(Tenant).get(tid)
     if not t:
         raise HTTPException(404, "Tenant not found")
+    slug, name = t.slug, t.name
     db.delete(t); db.commit()
+    audit.log(db, "tenant.delete", actor_id=cu.id, actor_email=cu.email,
+              actor_name=cu.name, resource="tenant", resource_id=slug,
+              detail=f"Deleted tenant {name}",
+              ip_address=request.client.host if request.client else "")
     return {"ok": True}
 
 

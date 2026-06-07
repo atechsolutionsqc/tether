@@ -8,11 +8,17 @@ Internal admin endpoints for MSP staff only.
   GET  /api/admin/backup/list                   — list recent backups
   POST /api/admin/alerts/warranty               — trigger warranty alert emails now
   POST /api/admin/tenants/{tid}/preview-token   — get a short-lived client token for previewing a tenant
+  GET  /api/admin/audit                         — paginated audit log
+  GET  /api/admin/audit/export                  — CSV export of audit log
 """
+import csv
+import io
 import os
 from datetime import datetime
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from db.database import get_db
@@ -206,3 +212,82 @@ def tenant_preview_token(
 
     token = create_token(user.id, user.tenant_id, False, user.password_hash)
     return {"token": token, "slug": tenant.slug}
+
+
+@router.get("/audit")
+def get_audit_log(
+    tenant_id: Optional[int] = None,
+    action: Optional[str] = None,
+    resource: Optional[str] = None,
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    cu: CurrentUser = Depends(get_current_user),
+):
+    cu.require("msp.dashboard")
+    from models.models import AuditLog
+    q = db.query(AuditLog)
+    if tenant_id is not None:
+        q = q.filter(AuditLog.tenant_id == tenant_id)
+    if action:
+        q = q.filter(AuditLog.action == action)
+    if resource:
+        q = q.filter(AuditLog.resource == resource)
+    total = q.count()
+    items = q.order_by(AuditLog.timestamp.desc()).offset(offset).limit(limit).all()
+    return {
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "items": [
+            {
+                "id":           e.id,
+                "timestamp":    e.timestamp.isoformat() + "Z",
+                "actor_email":  e.actor_email,
+                "actor_name":   e.actor_name,
+                "tenant_name":  e.tenant_name,
+                "action":       e.action,
+                "resource":     e.resource,
+                "resource_id":  e.resource_id,
+                "detail":       e.detail,
+                "ip_address":   e.ip_address,
+            }
+            for e in items
+        ],
+    }
+
+
+@router.get("/audit/export")
+def export_audit_log(
+    tenant_id: Optional[int] = None,
+    action: Optional[str] = None,
+    resource: Optional[str] = None,
+    db: Session = Depends(get_db),
+    cu: CurrentUser = Depends(get_current_user),
+):
+    cu.require("tenants.manage")
+    from models.models import AuditLog
+    q = db.query(AuditLog)
+    if tenant_id is not None:
+        q = q.filter(AuditLog.tenant_id == tenant_id)
+    if action:
+        q = q.filter(AuditLog.action == action)
+    if resource:
+        q = q.filter(AuditLog.resource == resource)
+    rows = q.order_by(AuditLog.timestamp.desc()).all()
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["timestamp", "actor_email", "actor_name", "tenant_name",
+                     "action", "resource", "resource_id", "detail", "ip_address"])
+    for e in rows:
+        writer.writerow([
+            e.timestamp.isoformat() + "Z",
+            e.actor_email, e.actor_name, e.tenant_name,
+            e.action, e.resource, e.resource_id, e.detail, e.ip_address,
+        ])
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=audit-log.csv"},
+    )

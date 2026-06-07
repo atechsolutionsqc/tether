@@ -106,7 +106,7 @@ class TestStandaloneSeeding:
     def test_client_endpoints_are_accessible(self, standalone_db, standalone_auth):
         r = standalone_db.get("/api/assets", headers=standalone_auth)
         assert r.status_code == 200
-        assert isinstance(r.json(), list)
+        assert isinstance(r.json()["items"], list)
 
     def test_default_categories_seeded(self, standalone_db, standalone_auth):
         r = standalone_db.get("/api/categories", headers=standalone_auth)

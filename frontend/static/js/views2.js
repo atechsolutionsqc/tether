@@ -1,5 +1,5 @@
 // ============ ASSETS LIST ============
-const AssetFilters = { q: '', status: '', category_id: '', location_id: '', sort: 'asset_tag', order: 'asc' };
+const AssetFilters = { q: '', status: '', category_id: '', location_id: '', sort: 'asset_tag', order: 'asc', page: 1 };
 let _lookups = { categories: [], locations: [], employees: [] };
 
 async function loadLookups() {
@@ -30,35 +30,41 @@ async function pageAssets() {
     <div id="asset-table">${loading()}</div>`;
 
   const q = document.getElementById('f-q');
-  let t; q.oninput = () => { clearTimeout(t); t = setTimeout(() => { AssetFilters.q = q.value; loadAssetTable(); }, 250); };
+  let t; q.oninput = () => { clearTimeout(t); t = setTimeout(() => { AssetFilters.q = q.value; AssetFilters.page = 1; loadAssetTable(); }, 250); };
   document.getElementById('f-status').value = AssetFilters.status;
   document.getElementById('f-cat').value = AssetFilters.category_id;
   document.getElementById('f-loc').value = AssetFilters.location_id;
-  document.getElementById('f-status').onchange = (e) => { AssetFilters.status = e.target.value; loadAssetTable(); };
-  document.getElementById('f-cat').onchange = (e) => { AssetFilters.category_id = e.target.value; loadAssetTable(); };
-  document.getElementById('f-loc').onchange = (e) => { AssetFilters.location_id = e.target.value; loadAssetTable(); };
+  document.getElementById('f-status').onchange = (e) => { AssetFilters.status = e.target.value; AssetFilters.page = 1; loadAssetTable(); };
+  document.getElementById('f-cat').onchange = (e) => { AssetFilters.category_id = e.target.value; AssetFilters.page = 1; loadAssetTable(); };
+  document.getElementById('f-loc').onchange = (e) => { AssetFilters.location_id = e.target.value; AssetFilters.page = 1; loadAssetTable(); };
   loadAssetTable();
 }
 
 function sortBy(col) {
   if (AssetFilters.sort === col) AssetFilters.order = AssetFilters.order === 'asc' ? 'desc' : 'asc';
   else { AssetFilters.sort = col; AssetFilters.order = 'asc'; }
+  AssetFilters.page = 1;
   loadAssetTable();
 }
+
+function goPrevPage() { if (AssetFilters.page > 1) { AssetFilters.page--; loadAssetTable(); } }
+function goNextPage(pages) { if (AssetFilters.page < pages) { AssetFilters.page++; loadAssetTable(); } }
 
 async function loadAssetTable() {
   const wrap = document.getElementById('asset-table');
   const params = new URLSearchParams();
   Object.entries(AssetFilters).forEach(([k, v]) => { if (v) params.append(k, v); });
-  let assets;
-  try { assets = await api('/assets?' + params); } catch (e) { toast(e.message, 'err'); return; }
+  let data;
+  try { data = await api('/assets?' + params); } catch (e) { toast(e.message, 'err'); return; }
 
-  if (!assets.length) {
+  const { items, total, page, pages } = data;
+
+  if (!items.length) {
     wrap.innerHTML = `<div class="table-wrap"><div class="empty">${icon('box', 44)}<h3>No assets found</h3><p>${AssetFilters.q || AssetFilters.status ? 'Try adjusting your filters.' : 'Add your first asset to get started.'}</p></div></div>`;
     return;
   }
   const arr = (c) => AssetFilters.sort === c ? `<span class="arr">${AssetFilters.order === 'asc' ? '▲' : '▼'}</span>` : '';
-  const rows = assets.map(a => `
+  const rows = items.map(a => `
     <tr onclick="navigate('asset', ${a.id})">
       <td><span class="tag">${esc(a.asset_tag)}</span></td>
       <td><div class="cell-name">${esc(a.name)}</div><div class="cell-sub">${esc(a.manufacturer || a.model || '')}</div></td>
@@ -67,6 +73,12 @@ async function loadAssetTable() {
       <td class="muted">${esc(a.assigned_to_name || '—')}</td>
       <td class="muted">${esc(a.location_name || '—')}</td>
     </tr>`).join('');
+  const pagination = pages > 1 ? `
+    <div class="pagination">
+      <button class="btn btn-ghost btn-sm" onclick="goPrevPage()" ${page <= 1 ? 'disabled' : ''}>← Prev</button>
+      <span class="page-info">Page ${page} of ${pages}</span>
+      <button class="btn btn-ghost btn-sm" onclick="goNextPage(${pages})" ${page >= pages ? 'disabled' : ''}>Next →</button>
+    </div>` : '';
   wrap.innerHTML = `
     <div class="table-wrap"><table>
       <thead><tr>
@@ -79,7 +91,8 @@ async function loadAssetTable() {
       </tr></thead>
       <tbody>${rows}</tbody>
     </table></div>
-    <p class="muted" style="margin-top:12px;font-size:12.5px">${assets.length} asset${assets.length !== 1 ? 's' : ''}</p>`;
+    ${pagination}
+    <p class="muted" style="margin-top:8px;font-size:12.5px">${total} asset${total !== 1 ? 's' : ''}</p>`;
 }
 
 // ============ ASSET FORM ============
@@ -1103,6 +1116,17 @@ async function pageAdmin() {
           ? `<p class="muted">Sends daily at 08:00 UTC. Covers assets expiring within ${svc.warranty_window_days} days.</p>`
           : `<p class="muted">Warranty alerts require <code>WARRANTY_ALERTS_ENABLED=true</code> and an email provider configured in <code>.env</code>.</p>`}
       </div>
+    </div>
+
+    <!-- Audit log section -->
+    <div class="panel" style="max-width:800px;margin-top:18px">
+      <div class="panel-head">
+        <h3>Audit Log</h3>
+        <button class="btn btn-accent btn-sm" onclick="pageAuditLog()">View audit log</button>
+      </div>
+      <div class="panel-body">
+        <p class="muted">A record of every action taken in Tether — logins, asset changes, user management, and more.</p>
+      </div>
     </div>`;
 }
 
@@ -1150,4 +1174,348 @@ async function triggerWarrantyAlerts() {
     const r = await api('/admin/alerts/warranty', 'POST', {});
     toast(`Warranty alerts sent. Assets in window: ${r.assets_in_window}`);
   } catch(e) { toast(e.message, 'err'); }
+}
+
+// ── Audit Log ─────────────────────────────────────────────────────────────────
+
+let _auditFilters = { action: '', tenant_id: '', offset: 0, limit: 100 };
+
+async function pageAuditLog() {
+  _auditFilters = { action: '', tenant_id: '', offset: 0, limit: 100 };
+  const page = document.getElementById('page');
+  page.innerHTML = pageHeader('Audit Log', 'MSP') + `
+    <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:16px">
+      <div>
+        <label class="form-label">Action filter</label>
+        <input id="af-action" class="form-input" style="width:200px" placeholder="e.g. asset.create"
+          oninput="_auditFilters.action=this.value;_auditFilters.offset=0;_loadAuditLog()">
+      </div>
+      <div>
+        <label class="form-label">Tenant ID</label>
+        <input id="af-tenant" class="form-input" style="width:120px" type="number" placeholder="All"
+          oninput="_auditFilters.tenant_id=this.value;_auditFilters.offset=0;_loadAuditLog()">
+      </div>
+      <button class="btn btn-ghost btn-sm" onclick="exportAuditLog()">Export CSV</button>
+    </div>
+    <div id="audit-table-wrap">${loading()}</div>`;
+  await _loadAuditLog();
+}
+
+async function _loadAuditLog() {
+  const wrap = document.getElementById('audit-table-wrap');
+  if (!wrap) return;
+  wrap.innerHTML = loading();
+  const p = new URLSearchParams({ limit: _auditFilters.limit, offset: _auditFilters.offset });
+  if (_auditFilters.action)    p.set('action', _auditFilters.action);
+  if (_auditFilters.tenant_id) p.set('tenant_id', _auditFilters.tenant_id);
+  let data;
+  try { data = await api('/admin/audit?' + p); }
+  catch(e) { wrap.innerHTML = `<div style="color:var(--red)">${esc(e.message)}</div>`; return; }
+
+  if (!data.items.length) {
+    wrap.innerHTML = '<div class="muted">No audit entries found.</div>';
+    return;
+  }
+
+  const rows = data.items.map(e => `
+    <tr class="audit-row" onclick="_toggleAuditDetail(this)">
+      <td style="white-space:nowrap;font-size:12px;color:var(--text-muted)">${esc(e.timestamp.replace('T',' ').replace('Z',''))}</td>
+      <td>${esc(e.actor_email || '—')}</td>
+      <td>${esc(e.tenant_name || '—')}</td>
+      <td><code style="font-size:12px">${esc(e.action)}</code></td>
+      <td>${esc(e.resource_id || e.resource || '—')}</td>
+    </tr>
+    <tr class="audit-detail" style="display:none">
+      <td colspan="5" style="background:var(--surface);padding:10px 14px;font-size:12.5px">
+        ${e.detail ? `<div><strong>Detail:</strong> ${esc(e.detail)}</div>` : ''}
+        ${e.ip_address ? `<div><strong>IP:</strong> ${esc(e.ip_address)}</div>` : ''}
+        ${e.actor_name ? `<div><strong>Actor:</strong> ${esc(e.actor_name)}</div>` : ''}
+      </td>
+    </tr>`).join('');
+
+  const totalPages = Math.ceil(data.total / data.limit) || 1;
+  const curPage = Math.floor(data.offset / data.limit) + 1;
+  const pagBar = totalPages > 1 ? `
+    <div class="pagination">
+      <button class="btn btn-ghost btn-sm" ${curPage <= 1 ? 'disabled' : ''}
+        onclick="_auditFilters.offset=${(curPage-2)*data.limit};_loadAuditLog()">← Prev</button>
+      <span class="page-info">Page ${curPage} of ${totalPages} (${data.total} entries)</span>
+      <button class="btn btn-ghost btn-sm" ${curPage >= totalPages ? 'disabled' : ''}
+        onclick="_auditFilters.offset=${curPage*data.limit};_loadAuditLog()">Next →</button>
+    </div>` : `<div class="muted" style="margin-top:8px;font-size:12.5px">${data.total} entries</div>`;
+
+  wrap.innerHTML = `
+    <table class="data-table">
+      <thead><tr><th>Timestamp</th><th>Actor</th><th>Tenant</th><th>Action</th><th>Resource</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    ${pagBar}`;
+}
+
+function _toggleAuditDetail(row) {
+  const next = row.nextElementSibling;
+  if (next && next.classList.contains('audit-detail')) {
+    next.style.display = next.style.display === 'none' ? '' : 'none';
+  }
+}
+
+async function exportAuditLog() {
+  const p = new URLSearchParams();
+  if (_auditFilters.action)    p.set('action', _auditFilters.action);
+  if (_auditFilters.tenant_id) p.set('tenant_id', _auditFilters.tenant_id);
+  const url = `/api/admin/audit/export?${p}`;
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'audit-log.csv';
+  // Attach auth header via fetch + blob for JWT-authenticated downloads
+  try {
+    const resp = await fetch(url, { headers: { Authorization: 'Bearer ' + State.token } });
+    if (!resp.ok) throw new Error('Export failed');
+    const blob = await resp.blob();
+    a.href = URL.createObjectURL(blob);
+    a.click();
+    URL.revokeObjectURL(a.href);
+  } catch(e) { toast(e.message, 'err'); }
+}
+
+// ── Reports ───────────────────────────────────────────────────────────────────
+
+let _reportDays = 90;
+
+async function pageReports() {
+  const page = document.getElementById('page');
+
+  const exportBtn = `
+    <div style="position:relative;display:inline-block">
+      <button class="btn btn-accent btn-sm" onclick="_toggleReportExportMenu(event)">
+        ${icon('download', 14)} Export ▾
+      </button>
+      <div id="report-export-menu" style="display:none;position:absolute;right:0;top:100%;margin-top:4px;
+           background:var(--surface);border:1px solid var(--border);border-radius:8px;
+           box-shadow:0 4px 16px rgba(0,0,0,.15);min-width:180px;z-index:100;padding:4px 0">
+        <div class="menu-item" onclick="_downloadReport('warranty')">Warranty CSV</div>
+        <div class="menu-item" onclick="_downloadReport('assets')">Assets CSV</div>
+        <div class="menu-item" onclick="_downloadReport('value')">Value CSV</div>
+      </div>
+    </div>`;
+
+  page.innerHTML = pageHeader('Reports', '', exportBtn) + `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:18px;align-items:start">
+      <div id="rpt-warranty">${loading()}</div>
+      <div id="rpt-status">${loading()}</div>
+      <div id="rpt-value">${loading()}</div>
+    </div>`;
+
+  _loadWarrantyCard();
+  _loadStatusCard();
+  _loadValueCard();
+}
+
+function _toggleReportExportMenu(e) {
+  e.stopPropagation();
+  const m = document.getElementById('report-export-menu');
+  if (!m) return;
+  m.style.display = m.style.display === 'none' ? '' : 'none';
+  const hide = () => { m.style.display = 'none'; document.removeEventListener('click', hide); };
+  if (m.style.display !== 'none') document.addEventListener('click', hide);
+}
+
+async function _downloadReport(type) {
+  document.getElementById('report-export-menu').style.display = 'none';
+  const p = new URLSearchParams({ report_type: type });
+  if (type === 'warranty') p.set('days', _reportDays);
+  const url = `/api/reports/export?${p}`;
+  try {
+    const resp = await fetch(url, { headers: { Authorization: 'Bearer ' + State.token } });
+    if (!resp.ok) throw new Error('Export failed');
+    const blob = await resp.blob();
+    const cd = resp.headers.get('content-disposition') || '';
+    const fname = (cd.match(/filename=([^;]+)/) || [])[1] || `tether-report-${type}.csv`;
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = fname;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  } catch(e) { toast(e.message, 'err'); }
+}
+
+async function _loadWarrantyCard() {
+  const wrap = document.getElementById('rpt-warranty');
+  if (!wrap) return;
+
+  const dayOpts = [30, 60, 90, 180].map(d =>
+    `<button class="btn btn-sm ${d === _reportDays ? 'btn-accent' : 'btn-ghost'}"
+       onclick="_reportDays=${d};_loadWarrantyCard()">${d}d</button>`
+  ).join('');
+
+  wrap.innerHTML = `<div class="panel">
+    <div class="panel-head">
+      <h3>${icon('alert', 15)} Warranty Report</h3>
+      <div style="display:flex;gap:6px;align-items:center">
+        ${dayOpts}
+        <button class="btn btn-ghost btn-sm" onclick="_loadWarrantyCard()" title="Refresh">${icon('refresh', 14)}</button>
+      </div>
+    </div>
+    <div class="panel-body" id="rpt-warranty-body">${loading()}</div>
+  </div>`;
+
+  let items;
+  try { items = await api(`/reports/warranty?days=${_reportDays}`); }
+  catch(e) { document.getElementById('rpt-warranty-body').innerHTML = `<p style="color:var(--red)">${esc(e.message)}</p>`; return; }
+
+  const body = document.getElementById('rpt-warranty-body');
+  if (!items.length) {
+    body.innerHTML = `<p class="muted">No warranties expiring in the next ${_reportDays} days</p>`;
+    return;
+  }
+
+  const showTenant = isMSP();
+  const rows = items.map(w => {
+    const d = w.days_remaining;
+    const color = d <= 7 ? 'var(--red)' : d <= 30 ? 'var(--amber)' : '';
+    const style = color ? ` style="color:${color};font-weight:600"` : '';
+    return `<tr${style}>
+      <td><code style="font-size:12px">${esc(w.asset_tag)}</code></td>
+      <td>${esc(w.name)}</td>
+      ${showTenant ? `<td>${esc(w.tenant_name || '—')}</td>` : ''}
+      <td>${esc(w.warranty_expiry ? fmtDate(w.warranty_expiry) : '—')}</td>
+      <td${style}>${d != null ? d + 'd' : '—'}</td>
+      <td class="muted">${esc(w.location_name || '—')}</td>
+    </tr>`;
+  }).join('');
+
+  body.innerHTML = `<div class="table-wrap" style="border:none;box-shadow:none">
+    <table class="data-table">
+      <thead><tr>
+        <th>Tag</th><th>Name</th>
+        ${showTenant ? '<th>Tenant</th>' : ''}
+        <th>Expiry Date</th><th>Days Remaining</th><th>Location</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
+}
+
+async function _loadStatusCard() {
+  const wrap = document.getElementById('rpt-status');
+  if (!wrap) return;
+  wrap.innerHTML = `<div class="panel">
+    <div class="panel-head">
+      <h3>${icon('box', 15)} Assets by Status</h3>
+      <button class="btn btn-ghost btn-sm" onclick="_loadStatusCard()" title="Refresh">${icon('refresh', 14)}</button>
+    </div>
+    <div class="panel-body" id="rpt-status-body">${loading()}</div>
+  </div>`;
+
+  let data;
+  try { data = await api('/reports/assets-by-status'); }
+  catch(e) { document.getElementById('rpt-status-body').innerHTML = `<p style="color:var(--red)">${esc(e.message)}</p>`; return; }
+
+  const body = document.getElementById('rpt-status-body');
+  const s = data.summary;
+  const statuses = [
+    { key: 'available',   label: 'Available',   color: 'var(--emerald)' },
+    { key: 'deployed',    label: 'Deployed',    color: 'var(--indigo)'  },
+    { key: 'maintenance', label: 'Maintenance', color: 'var(--amber)'   },
+    { key: 'retired',     label: 'Retired',     color: 'var(--text-muted)' },
+  ];
+
+  const statBoxes = statuses.map(st => `
+    <div class="stat">
+      <div class="label">${st.label}</div>
+      <div class="value" style="color:${st.color}">${s[st.key] ?? 0}</div>
+    </div>`).join('');
+
+  let tenantTable = '';
+  if (data.by_tenant?.length) {
+    const trows = data.by_tenant.map(t => `<tr>
+      <td>${esc(t.tenant_name)}</td>
+      <td>${t.available}</td><td>${t.deployed}</td>
+      <td>${t.maintenance}</td><td>${t.retired}</td>
+      <td><b>${t.total}</b></td>
+    </tr>`).join('');
+    tenantTable = `<div style="margin-top:16px">
+      <div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:8px">BY TENANT</div>
+      <div class="table-wrap" style="border:none;box-shadow:none">
+        <table class="data-table" style="font-size:12.5px">
+          <thead><tr><th>Tenant</th><th>Avail</th><th>Deploy</th><th>Maint</th><th>Retired</th><th>Total</th></tr></thead>
+          <tbody>${trows}</tbody>
+        </table>
+      </div>
+    </div>`;
+  }
+
+  body.innerHTML = `
+    <div class="stat-grid" style="margin-bottom:4px">
+      ${statBoxes}
+    </div>
+    <div style="text-align:center;font-size:12px;color:var(--text-muted);margin-top:4px">
+      ${s.total} total assets
+    </div>
+    ${tenantTable}`;
+}
+
+async function _loadValueCard() {
+  const wrap = document.getElementById('rpt-value');
+  if (!wrap) return;
+  wrap.innerHTML = `<div class="panel">
+    <div class="panel-head">
+      <h3>${icon('dollar', 15)} Asset Value</h3>
+      <button class="btn btn-ghost btn-sm" onclick="_loadValueCard()" title="Refresh">${icon('refresh', 14)}</button>
+    </div>
+    <div class="panel-body" id="rpt-value-body">${loading()}</div>
+  </div>`;
+
+  let data;
+  try { data = await api('/reports/value'); }
+  catch(e) { document.getElementById('rpt-value-body').innerHTML = `<p style="color:var(--red)">${esc(e.message)}</p>`; return; }
+
+  const body = document.getElementById('rpt-value-body');
+
+  const catRows = data.by_category.map(c => `<tr>
+    <td>${esc(c.category_name)}</td>
+    <td>${c.count}</td>
+    <td>${money(c.total_value)}</td>
+    <td class="muted">${money(c.avg_value)}</td>
+  </tr>`).join('');
+
+  const topRows = data.top_assets.map((a, i) => `<tr>
+    <td class="muted" style="font-size:11px">${i + 1}</td>
+    <td><code style="font-size:11.5px">${esc(a.asset_tag)}</code></td>
+    <td>${esc(a.name)}</td>
+    ${isMSP() ? `<td class="muted">${esc(a.tenant_name || '—')}</td>` : ''}
+    <td style="font-weight:600">${money(a.purchase_cost)}</td>
+  </tr>`).join('');
+
+  body.innerHTML = `
+    <div style="text-align:center;padding:10px 0 14px">
+      <div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em">Total Value</div>
+      <div style="font-size:28px;font-weight:700;color:var(--accent)">${money(data.total_value)}</div>
+    </div>
+    <div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:6px">BY CATEGORY</div>
+    <div class="table-wrap" style="border:none;box-shadow:none;margin-bottom:16px">
+      <table class="data-table" style="font-size:12.5px">
+        <thead><tr><th>Category</th><th>Assets</th><th>Total</th><th>Avg</th></tr></thead>
+        <tbody>${catRows || '<tr><td colspan="4" class="muted">No data</td></tr>'}</tbody>
+      </table>
+    </div>
+    <div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:6px">TOP 10 ASSETS</div>
+    <div class="table-wrap" style="border:none;box-shadow:none">
+      <table class="data-table" style="font-size:12.5px">
+        <thead><tr><th>#</th><th>Tag</th><th>Name</th>${isMSP() ? '<th>Tenant</th>' : ''}<th>Cost</th></tr></thead>
+        <tbody>${topRows || '<tr><td colspan="5" class="muted">No valued assets</td></tr>'}</tbody>
+      </table>
+    </div>`
+    + (data.by_tenant?.length ? `
+    <div style="margin-top:16px">
+      <div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:6px">BY TENANT</div>
+      <div class="table-wrap" style="border:none;box-shadow:none">
+        <table class="data-table" style="font-size:12.5px">
+          <thead><tr><th>Tenant</th><th>Assets</th><th>Total Value</th></tr></thead>
+          <tbody>${data.by_tenant.map(t => `<tr>
+            <td>${esc(t.tenant_name)}</td><td>${t.count}</td><td>${money(t.total_value)}</td>
+          </tr>`).join('')}</tbody>
+        </table>
+      </div>
+    </div>` : '');
 }

@@ -129,6 +129,7 @@ function buildNav() {
     { id: 'dashboard', label: 'Dashboard', icon: 'dashboard' },
     { id: 'clients',   label: 'Clients',   icon: 'layers' },
     { id: 'msp-users', label: 'Users',     icon: 'users' },
+    { id: 'reports',   label: 'Reports',   icon: 'activity' },
     { id: 'billing',   label: 'Plan',      icon: 'dollar' },
     { id: 'settings',  label: 'Settings',  icon: 'settings' },
     { id: 'system',    label: 'System',    icon: 'server' },
@@ -140,6 +141,7 @@ function buildNav() {
     { id: 'categories',label: 'Categories',icon: 'layers' },
     { id: 'locations', label: 'Locations', icon: 'pin' },
     { id: 'employees', label: 'People',    icon: 'users' },
+    { id: 'reports',   label: 'Reports',   icon: 'activity' },
   ];
   if (can('users.manage')) client.push({ id: 'team', label: 'Team', icon: 'lock' });
   client.push({ id: 'settings', label: 'Settings', icon: 'settings' });
@@ -218,6 +220,7 @@ function renderApp() {
     employees:  pageEmployees,
     team:       pageTeam,
     settings:   pageSettings,
+    reports:    pageReports,
   };
   (routes[State.route] || pageDashboard)();
   // Load usage bar asynchronously — non-blocking
