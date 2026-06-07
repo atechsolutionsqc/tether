@@ -47,15 +47,17 @@ def standalone_db(tmp_path_factory):
     for k, v in env_overrides.items():
         os.environ[k] = v
 
-    # Remove cached modules so they re-read the new env
+    # Remove cached modules so they re-read the new env.
+    # Must clear both the package itself (e.g. "db") and its submodules ("db.database"),
+    # otherwise the cached package object keeps stale submodule references.
+    _purge = ("db", "models", "security", "main", "billing", "routers",
+              "scheduler", "backup_service", "email_service", "rate_limit", "schemas")
     for mod in list(sys.modules.keys()):
-        if any(mod.startswith(p) for p in ("db.", "models.", "security", "main", "billing", "routers.", "scheduler", "backup_service", "email_service", "rate_limit")):
+        if any(mod == p or mod.startswith(p + ".") for p in _purge):
             del sys.modules[mod]
 
     from fastapi.testclient import TestClient
     from main import app
-    from db.database import init_db
-    init_db()
 
     with TestClient(app) as c:
         yield c
