@@ -127,6 +127,9 @@ def _seed(db):
     from models.models import Permission, Role, RolePermission, User, Tenant, Category, Location, MspBilling
     from security import hash_password
 
+    deployment_mode = os.environ.get("DEPLOYMENT_MODE", "selfhosted")
+    standalone = deployment_mode == "standalone"
+
     # 1. Permissions
     perm_map = {}
     for key, desc in ALL_PERMISSIONS:
@@ -154,42 +157,60 @@ def _seed(db):
                 db.add(RolePermission(role_id=r.id, permission_id=pid))
         role_map[rname] = r
 
-    # 3. Default MSP admin user
-    if not db.query(User).filter(User.is_msp_staff == True).first():  # noqa: E712
-        admin_email = os.environ.get("ADMIN_EMAIL", "admin@usetether.ca")
-        admin_pass  = os.environ.get("ADMIN_PASSWORD", "admin")
-        admin_name  = os.environ.get("ADMIN_NAME", "MSP Admin")
-        db.add(User(
-            tenant_id=None,
-            role_id=role_map["msp_admin"].id,
-            name=admin_name,
-            email=admin_email,
-            password_hash=hash_password(admin_pass),
-            is_msp_staff=True,
-        ))
-
-    # 4. Default demo tenant (skipped if any tenant already exists)
+    # 3. Default tenant (skipped if any tenant already exists)
     if not db.query(Tenant).first():
-        slug = os.environ.get("DEFAULT_TENANT_SLUG", "demo")
-        t = Tenant(name=os.environ.get("DEFAULT_TENANT_NAME", "Demo Client"),
-                   slug=slug, currency="USD")
+        default_slug = os.environ.get("DEFAULT_TENANT_SLUG", "mycompany" if standalone else "demo")
+        default_name = os.environ.get("DEFAULT_TENANT_NAME", "My Company"  if standalone else "Demo Client")
+        t = Tenant(name=default_name, slug=default_slug, currency="USD")
         db.add(t)
         db.flush()
-        # seed categories + locations for demo tenant
-        for cname, icon in [("Laptop","laptop"),("Desktop","monitor"),("Monitor","tv"),
-                             ("Phone","smartphone"),("Server","server"),
-                             ("Network","wifi"),("Peripheral","mouse")]:
-            db.add(Category(tenant_id=t.id, name=cname, icon=icon))
+        for cname, cicon in [("Laptop","laptop"),("Desktop","monitor"),("Monitor","tv"),
+                              ("Phone","smartphone"),("Server","server"),
+                              ("Network","wifi"),("Peripheral","mouse")]:
+            db.add(Category(tenant_id=t.id, name=cname, icon=cicon))
         for lname in ["Head Office", "Warehouse", "Remote"]:
             db.add(Location(tenant_id=t.id, name=lname))
 
-    # 5. MSP billing row (one per installation)
-    from billing import is_saas, DEPLOYMENT_MODE
-    from datetime import datetime, timedelta
-    if not db.query(MspBilling).first():
-        tier = "trial" if is_saas() else "selfhosted"
-        trial_ends = datetime.utcnow() + timedelta(days=30) if tier == "trial" else None
-        db.add(MspBilling(tier=tier, trial_ends_at=trial_ends))
+    # 4. Admin user — MSP admin in normal modes; client_admin in standalone
+    admin_email = os.environ.get("ADMIN_EMAIL", "admin@usetether.ca")
+    admin_pass  = os.environ.get("ADMIN_PASSWORD", "admin")
+    admin_name  = os.environ.get("ADMIN_NAME", "Admin" if standalone else "MSP Admin")
+
+    if standalone:
+        # Seed a client_admin for the default tenant if none exists yet
+        default_tenant = db.query(Tenant).first()
+        if default_tenant and not db.query(User).filter(
+            User.tenant_id == default_tenant.id,
+            User.is_msp_staff == False,  # noqa: E712
+        ).first():
+            db.add(User(
+                tenant_id=default_tenant.id,
+                role_id=role_map["client_admin"].id,
+                name=admin_name,
+                email=admin_email,
+                password_hash=hash_password(admin_pass),
+                is_msp_staff=False,
+            ))
+    else:
+        # MSP / SaaS / demo: seed MSP admin
+        if not db.query(User).filter(User.is_msp_staff == True).first():  # noqa: E712
+            db.add(User(
+                tenant_id=None,
+                role_id=role_map["msp_admin"].id,
+                name=admin_name,
+                email=admin_email,
+                password_hash=hash_password(admin_pass),
+                is_msp_staff=True,
+            ))
+
+    # 5. Billing row (one per installation; skipped in standalone)
+    if not standalone:
+        from billing import is_saas, DEPLOYMENT_MODE
+        from datetime import datetime, timedelta
+        if not db.query(MspBilling).first():
+            tier = "trial" if is_saas() else "selfhosted"
+            trial_ends = datetime.utcnow() + timedelta(days=30) if tier == "trial" else None
+            db.add(MspBilling(tier=tier, trial_ends_at=trial_ends))
 
     db.commit()
     db.close()

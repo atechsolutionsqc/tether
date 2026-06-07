@@ -7,6 +7,7 @@ Covers:
   - /api/public/branding returns tenant branding
   - Branding returns MSP defaults at root domain
   - Branding returns tenant customisation at subdomain
+  - /api/public/demo returns enabled:false in non-demo mode
 """
 
 
@@ -55,6 +56,49 @@ class TestBranding:
                        headers={"host": "unknownslug.localhost"})
         # Should return 200 with default branding, not crash
         assert r.status_code == 200
+
+
+class TestStandaloneBranding:
+    def test_standalone_root_returns_tenant_branding(self, client, tenant, monkeypatch):
+        monkeypatch.setenv("DEPLOYMENT_MODE", "standalone")
+        r = client.get("/api/public/branding", headers={"host": "localhost"})
+        assert r.status_code == 200
+        data = r.json()
+        assert data["is_tenant"]  is True
+        assert data["standalone"] is True
+        assert "name"         in data
+        assert "accent_color" in data
+
+    def test_non_standalone_root_returns_msp_branding(self, client, monkeypatch):
+        monkeypatch.setenv("DEPLOYMENT_MODE", "selfhosted")
+        r = client.get("/api/public/branding", headers={"host": "localhost"})
+        assert r.status_code == 200
+        assert r.json()["is_tenant"] is False
+
+
+class TestDemoEndpoint:
+    def test_disabled_in_non_demo_mode(self, client):
+        r = client.get("/api/public/demo")
+        assert r.status_code == 200
+        assert r.json()["enabled"] is False
+
+    def test_no_credentials_exposed_in_non_demo_mode(self, client):
+        data = client.get("/api/public/demo").json()
+        assert "client" not in data
+        assert "msp"    not in data
+
+    def test_demo_mode_returns_credentials(self, client, monkeypatch):
+        monkeypatch.setenv("DEPLOYMENT_MODE", "demo")
+        monkeypatch.setenv("RESET_SECRET",    "test-reset-secret")
+        r = client.get("/api/public/demo")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["enabled"]          is True
+        assert "email"    in data["client"]
+        assert "password" in data["client"]
+        assert "slug"     in data["client"]
+        assert "email"    in data["msp"]
+        assert "password" in data["msp"]
 
 
 class TestSwaggerDocs:

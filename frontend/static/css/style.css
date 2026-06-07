@@ -55,6 +55,11 @@ input, select, textarea { font-family: inherit; font-size: 14px; }
 .login-logo b { font-family: var(--display); font-size: 21px; font-weight: 700; letter-spacing: -.02em; }
 .login-card h1 { font-family: var(--display); font-size: 22px; font-weight: 600; margin-bottom: 4px; letter-spacing: -.02em; }
 .login-card p.sub { color: var(--text-muted); margin-bottom: 26px; }
+.demo-divider { display: flex; align-items: center; gap: 10px; margin: 20px 0 14px; color: var(--text-muted); font-size: 12.5px; }
+.demo-divider::before, .demo-divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+.demo-btns { display: flex; gap: 8px; }
+.demo-btn { flex: 1; justify-content: center; font-size: 13px; }
+.demo-banner { display: flex; align-items: center; gap: 8px; padding: 9px 20px; background: #fff8e1; border-bottom: 1px solid #ffe082; font-size: 13px; color: #7c5700; flex-shrink: 0; }
 
 /* ---------- LAYOUT ---------- */
 .shell { display: grid; grid-template-columns: 248px 1fr; min-height: 100vh; }
@@ -280,6 +285,10 @@ tbody tr:hover { background: #fafbfc; cursor: pointer; }
 }
 .sidebar-context .ctx-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: #5c6270; }
 .sidebar-context .ctx-val   { font-size: 13px; color: #c9cdd6; font-weight: 600; margin-top: 2px; }
+.back-to-msp { margin-top: 8px; width: 100%; justify-content: flex-start; color: #8b9ab0 !important; font-size: 12px !important; }
+.back-to-msp:hover { color: #c9cdd6 !important; background: var(--ink-line) !important; }
+.client-link { cursor: pointer; text-decoration: underline; text-underline-offset: 3px; text-decoration-color: transparent; transition: text-decoration-color .15s; }
+.client-link:hover { text-decoration-color: currentColor; color: var(--accent-deep); }
 
 .tenant-badge { display:inline-flex; align-items:center; gap:4px; }
 

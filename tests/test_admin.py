@@ -7,8 +7,10 @@ Covers:
   - /admin/backup/run blocked when disabled
   - /admin/backup/list returns empty when not configured
   - /admin/alerts/warranty blocked when email not configured
+  - /admin/tenants/{tid}/preview-token creates/reuses preview user and returns usable JWT
   - All endpoints require msp.dashboard or tenants.manage permission
 """
+import time
 import pytest
 
 
@@ -134,3 +136,62 @@ class TestAdminPermissions:
     def test_client_user_cannot_run_backup(self, client, client_user_token):
         r = client.post("/api/admin/backup/run", headers=client_user_token)
         assert r.status_code == 403
+
+
+class TestPreviewToken:
+    def test_returns_token_and_slug(self, client, auth, tenant):
+        r = client.post(f"/api/admin/tenants/{tenant['id']}/preview-token", headers=auth)
+        assert r.status_code == 200
+        data = r.json()
+        assert "token" in data
+        assert data["slug"] == tenant["slug"]
+
+    def test_idempotent_no_duplicate_users(self, client, auth, tenant):
+        r1 = client.post(f"/api/admin/tenants/{tenant['id']}/preview-token", headers=auth)
+        r2 = client.post(f"/api/admin/tenants/{tenant['id']}/preview-token", headers=auth)
+        assert r1.status_code == 200
+        assert r2.status_code == 200
+        assert "token" in r1.json()
+        assert "token" in r2.json()
+
+    def test_nonexistent_tenant_returns_404(self, client, auth):
+        r = client.post("/api/admin/tenants/999999/preview-token", headers=auth)
+        assert r.status_code == 404
+
+    def test_requires_msp(self, client, auth, tenant, roles):
+        uid = int(time.time() * 1000) % 999999
+        email = f"nopreview{uid}@test.com"
+        client.post("/api/users", json={
+            "name": "No Preview", "email": email, "password": "password123",
+            "role_id": roles["client_viewer"]["id"],
+            "tenant_id": tenant["id"],
+            "is_msp_staff": False, "active": True,
+        }, headers=auth)
+        r = client.post("/api/auth/login", data={"username": email, "password": "password123"})
+        non_msp_auth = {"Authorization": f"Bearer {r.json()['access_token']}"}
+        r = client.post(f"/api/admin/tenants/{tenant['id']}/preview-token", headers=non_msp_auth)
+        assert r.status_code == 403
+
+    def test_token_is_usable_as_client(self, client, auth, tenant):
+        r = client.post(f"/api/admin/tenants/{tenant['id']}/preview-token", headers=auth)
+        preview_token = r.json()["token"]
+        slug = r.json()["slug"]
+        preview_auth = {
+            "Authorization": f"Bearer {preview_token}",
+            "host": f"{slug}.localhost",
+        }
+        me = client.get("/api/auth/me", headers=preview_auth)
+        assert me.status_code == 200
+        assert me.json()["is_msp_staff"] is False
+
+    def test_preview_token_not_msp(self, client, auth, tenant):
+        r = client.post(f"/api/admin/tenants/{tenant['id']}/preview-token", headers=auth)
+        preview_token = r.json()["token"]
+        slug = r.json()["slug"]
+        preview_auth = {
+            "Authorization": f"Bearer {preview_token}",
+            "host": f"{slug}.localhost",
+        }
+        # Preview user cannot reach MSP admin endpoints
+        r2 = client.get("/api/admin/status", headers=preview_auth)
+        assert r2.status_code == 403

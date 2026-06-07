@@ -4,6 +4,7 @@ const State = {
   user:     null,
   settings: { name: 'Tether', currency: 'USD', logo_url: '', accent_color: '#d4f034', mode: 'tenant' },
   branding: null,   // public branding from /api/public/branding
+  demo:     null,   // demo credentials from /api/public/demo (null when not in demo mode)
   route:    'dashboard',
   param:    null,
 };
@@ -232,15 +233,41 @@ async function boot() {
 
 async function fetchBranding() {
   try {
-    State.branding = await (await fetch('/api/public/branding')).json();
+    [State.branding, State.demo] = await Promise.all([
+      fetch('/api/public/branding').then(r => r.json()),
+      fetch('/api/public/demo').then(r => r.json()).catch(() => ({ enabled: false })),
+    ]);
     applyAccent(State.branding.accent_color);
   } catch (_) {
     State.branding = { name: 'Tether', logo_url: '', accent_color: '#d4f034', is_tenant: false };
+    State.demo     = { enabled: false };
   }
+}
+
+async function loginAsDemo(role) {
+  const creds = role === 'msp' ? State.demo?.msp : State.demo?.client;
+  if (!creds) return;
+  const btn = document.getElementById(`demo-btn-${role}`);
+  if (btn) { btn.disabled = true; btn.textContent = 'Signing in…'; }
+  try { await login(creds.email, creds.password); }
+  catch (err) { toast(err.message, 'err'); if (btn) { btn.disabled = false; btn.textContent = role === 'msp' ? 'MSP Admin' : 'Client User'; } }
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
   await fetchBranding();
+
+  // Consume a preview token from the URL (set by previewAsClient()).
+  // Stored only in State — not localStorage — so it expires with the tab.
+  const urlParams = new URLSearchParams(window.location.search);
+  const previewToken = urlParams.get('preview_token');
+  if (previewToken) {
+    State.token = previewToken;
+    urlParams.delete('preview_token');
+    const qs = urlParams.toString();
+    window.history.replaceState({}, '',
+      window.location.pathname + (qs ? '?' + qs : '') + window.location.hash);
+  }
+
   const path = window.location.pathname;
 
   // Signup page

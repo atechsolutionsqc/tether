@@ -3,10 +3,11 @@ routers/admin_router.py
 
 Internal admin endpoints for MSP staff only.
 
-  GET  /api/admin/status           — system info + config status
-  POST /api/admin/backup/run       — trigger a backup immediately
-  GET  /api/admin/backup/list      — list recent backups
-  POST /api/admin/alerts/warranty  — trigger warranty alert emails now
+  GET  /api/admin/status                        — system info + config status
+  POST /api/admin/backup/run                    — trigger a backup immediately
+  GET  /api/admin/backup/list                   — list recent backups
+  POST /api/admin/alerts/warranty               — trigger warranty alert emails now
+  POST /api/admin/tenants/{tid}/preview-token   — get a short-lived client token for previewing a tenant
 """
 import os
 from datetime import datetime
@@ -161,3 +162,47 @@ def trigger_warranty_alerts(
         return result
     except Exception as exc:
         raise HTTPException(500, f"Alert job failed: {str(exc)}")
+
+
+@router.post("/tenants/{tid}/preview-token")
+def tenant_preview_token(
+    tid: int,
+    db: Session = Depends(get_db),
+    cu: CurrentUser = Depends(get_current_user),
+):
+    """
+    Return a JWT scoped to a tenant as a non-MSP client user.
+    Creates a dedicated __preview user for the tenant on first call; reuses it on subsequent calls.
+    The token is not persisted in the browser — it is only used for the tab that opens.
+    """
+    cu.require("msp.dashboard")
+
+    from models.models import Role
+    from security import hash_password, create_token
+
+    tenant = db.query(Tenant).get(tid)
+    if not tenant:
+        raise HTTPException(404, "Tenant not found")
+
+    preview_email = f"__preview@{tenant.slug}.tether"
+    user = db.query(User).filter(User.email == preview_email, User.tenant_id == tid).first()
+
+    if not user:
+        role = db.query(Role).filter(Role.is_msp_role == False).first()  # noqa: E712
+        if not role:
+            raise HTTPException(400, "No client roles configured")
+        user = User(
+            name="MSP Preview",
+            email=preview_email,
+            password_hash=hash_password("preview"),
+            tenant_id=tid,
+            is_msp_staff=False,
+            role_id=role.id,
+            active=True,
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+    token = create_token(user.id, user.tenant_id, False, user.password_hash)
+    return {"token": token, "slug": tenant.slug}

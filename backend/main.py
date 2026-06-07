@@ -97,6 +97,13 @@ def public_branding(request: Request, db: Session = Depends(get_db)):
     """Returns tenant branding for the login page — no auth required."""
     slug = resolve_tenant_slug(request)
     if not slug:
+        # In standalone mode the root domain IS the company — return their branding directly
+        if os.environ.get("DEPLOYMENT_MODE") == "standalone":
+            t = db.query(Tenant).first()
+            if t:
+                return {"name": t.name, "logo_url": t.logo_url or "",
+                        "accent_color": t.accent_color, "is_tenant": True,
+                        "slug": t.slug, "standalone": True}
         return {"name": "Tether", "logo_url": "", "accent_color": "#d4f034",
                 "is_tenant": False}
     tenant = (db.query(Tenant).filter(Tenant.slug == slug).first() or
@@ -108,6 +115,27 @@ def public_branding(request: Request, db: Session = Depends(get_db)):
     t = tenant if isinstance(tenant, Tenant) else tenant.tenant
     return {"name": t.name, "logo_url": t.logo_url,
             "accent_color": t.accent_color, "is_tenant": True, "slug": t.slug}
+
+
+# ── Public: demo credentials (only in demo mode) ─────────────────────────────
+@app.get("/api/public/demo")
+def public_demo_info():
+    """Returns demo login info for the login page. Returns {enabled:false} in non-demo mode."""
+    if os.environ.get("DEPLOYMENT_MODE") != "demo":
+        return {"enabled": False}
+    from routers.demo import _demo_password
+    return {
+        "enabled": True,
+        "client": {
+            "email":    "demo-client@acme.demo",
+            "password": _demo_password("DEMO_CLIENT_PASSWORD", "client"),
+            "slug":     "acme",
+        },
+        "msp": {
+            "email":    "demo-msp@usetether.ca",
+            "password": _demo_password("DEMO_MSP_PASSWORD", "msp"),
+        },
+    }
 
 
 # ── Tenant settings (scoped) ──────────────────────────────────────────────────

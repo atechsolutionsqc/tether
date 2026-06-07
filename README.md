@@ -1,6 +1,6 @@
 # Tether
 
-A modern, self-hostable IT asset management platform for MSPs and IT teams. Manage multiple client tenants, track hardware, handle check-outs, generate QR labels, and import/export via CSV — all from a clean web interface.
+A modern, self-hostable IT asset management tool. Run it as a **single company** tracking your own hardware, or as an **MSP** managing multiple client organisations from one instance.
 
 ---
 
@@ -13,7 +13,9 @@ A modern, self-hostable IT asset management platform for MSPs and IT teams. Mana
 - **QR labels** — per-asset QR codes downloadable as PNG
 - **CSV import/export** — bulk-load assets; categories, locations, and people are created automatically
 - **Search & filter** — by keyword, status, category, location; sortable columns
-- **Multi-tenant (MSP)** — manage multiple client organisations from a single instance; each tenant gets its own subdomain
+- **Standalone mode** — single-company deployment with no MSP layer; one login, one dashboard
+- **Multi-tenant (MSP)** — manage multiple client organisations from one instance; each tenant gets its own subdomain
+- **Preview as client** — MSP admins can open any client's view in a new tab with one click
 - **User management** — role-based permissions, per-user overrides, invite-based onboarding
 - **Password reset** — self-service via email token
 - **Billing** — Stripe-backed subscription management
@@ -24,37 +26,95 @@ A modern, self-hostable IT asset management platform for MSPs and IT teams. Mana
 
 ---
 
+## Deployment Modes
+
+Set `DEPLOYMENT_MODE` in `.env` to choose how Tether runs:
+
+| Mode | Who it's for |
+|------|-------------|
+| `selfhosted` | **MSP / default** — manage multiple client companies from one instance. Each client gets a subdomain. Requires wildcard DNS. |
+| `standalone` | **Single company** — your company is the only tenant. No MSP layer, no subdomain routing. Just log in and track your assets. |
+| `saas` | Hosted SaaS — tier limits and billing UI enabled. |
+| `demo` | Public demo — data resets on a schedule via the Cloudflare Worker integration. |
+
+---
+
 ## Quick Start
 
-### Docker (recommended)
+### Standalone (single company)
 
-**Requirements:** Docker + Docker Compose
+The simplest setup — no subdomain DNS needed.
+
+**`.env` minimum config:**
+```
+DEPLOYMENT_MODE=standalone
+SECRET_KEY=your-long-random-string
+ADMIN_EMAIL=you@yourcompany.com
+ADMIN_PASSWORD=changeme
+DEFAULT_TENANT_NAME=Your Company Name
+DEFAULT_TENANT_SLUG=yourcompany
+```
 
 ```bash
-# 1. Copy and edit the environment file
 cp .env.example .env
-#    Set a real SECRET_KEY and change ADMIN_PASSWORD before exposing to a network
-
-# 2. Start
+# edit the values above
 docker compose up -d
-
-# 3. Open
 open http://localhost:8000
 ```
 
-The database is stored in a named Docker volume (`tether_data`) and survives restarts and container rebuilds.
+Log in with `ADMIN_EMAIL` / `ADMIN_PASSWORD`. You land directly on your company dashboard — no MSP screens.
 
-To stop:
-```bash
-docker compose down
+---
+
+### MSP (multiple clients)
+
+**`.env` minimum config:**
+```
+DEPLOYMENT_MODE=selfhosted
+SECRET_KEY=your-long-random-string
+BASE_DOMAIN=yourdomain.com
+ADMIN_EMAIL=admin@yourdomain.com
+ADMIN_PASSWORD=changeme
 ```
 
-To update after pulling new code:
+**Requirements:** Docker + Docker Compose, wildcard DNS (`*.yourdomain.com` → your server)
+
 ```bash
+cp .env.example .env
+docker compose up -d
+open http://localhost:8000
+```
+
+Log in as the MSP admin, create client tenants, and navigate to each via their subdomain.
+
+---
+
+### Docker commands
+
+```bash
+# Stop
 docker compose down
-docker compose build --no-cache
+
+# Restart (keeps data)
 docker compose up -d
 ```
+
+---
+
+### Updating (Docker)
+
+Your data lives in Docker **named volumes** — it survives container rebuilds and image changes. Updating never touches these volumes.
+
+```bash
+git pull                          # fetch new code
+docker compose down               # stop running containers (data is safe)
+docker compose build --no-cache   # rebuild the app image
+docker compose up -d              # start with new image
+```
+
+The app runs database migrations automatically on startup, so no manual SQL steps are needed.
+
+> **Do not** use `docker compose down -v` — the `-v` flag deletes volumes and **will destroy your data**.
 
 ---
 
@@ -66,7 +126,7 @@ docker compose up -d
 # 1. Run the installer (creates a .venv, installs deps, generates .env)
 ./install.sh
 
-# 2. Edit .env if you want to change the admin password or secret key
+# 2. Edit .env — set DEPLOYMENT_MODE, SECRET_KEY, ADMIN_EMAIL, ADMIN_PASSWORD
 nano .env
 
 # 3. Start the server
@@ -75,28 +135,38 @@ cd backend
 export $(grep -v '^#' ../.env | xargs)
 export TETHER_DATA=../data
 uvicorn main:app --host 0.0.0.0 --port 8000
-
-# 4. Open
-open http://localhost:8000
 ```
 
 #### Install as a systemd service (starts on boot)
 
 ```bash
 sudo ./install.sh --service
-# Check status
 systemctl status tether
 ```
+
+### Updating (bare-metal)
+
+```bash
+git pull
+source .venv/bin/activate
+pip install -r requirements.txt   # pick up any new dependencies
+sudo systemctl restart tether     # or however you run the process
+```
+
+The app migrates the database on startup — no manual SQL steps needed.
 
 ---
 
 ## Default Login
 
-| Username | Password |
-|----------|----------|
-| `admin@usetether.ca` | `admin` |
+The first-run admin account is controlled by `ADMIN_EMAIL` and `ADMIN_PASSWORD` in `.env`.
 
-**Change the password immediately** via Settings → Change Password, and set a proper `SECRET_KEY` in `.env` before exposing the app on a network.
+| Mode | Default email | Default password |
+|------|--------------|-----------------|
+| `standalone` | value of `ADMIN_EMAIL` | value of `ADMIN_PASSWORD` |
+| `selfhosted` / `saas` | `admin@usetether.ca` | `admin` |
+
+**Change the password immediately** via Settings → Change Password, and set a proper `SECRET_KEY` before exposing the app on a network.
 
 ---
 
@@ -107,16 +177,30 @@ systemctl status tether
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SECRET_KEY` | *(insecure default)* | Secret for signing JWT tokens. Generate with `python -c "import secrets; print(secrets.token_hex(32))"` |
-| `BASE_DOMAIN` | `usetether.ca` | Root domain. Client subdomains are derived from this — e.g. `acme.usetether.ca` |
+| `DEPLOYMENT_MODE` | `selfhosted` | `selfhosted` · `standalone` · `saas` · `demo` — see [Deployment Modes](#deployment-modes) |
+| `BASE_DOMAIN` | `usetether.ca` | Root domain for subdomain routing (MSP/SaaS only). Not required in standalone mode. |
 | `APP_URL` | `https://usetether.ca` | Public URL of the app, used in emails and invite links |
-| `DEPLOYMENT_MODE` | `selfhosted` | Set to `demo` to enable demo mode |
 | `ALLOW_SIGNUP` | `false` | Set to `true` to enable public sign-up |
-| `ADMIN_EMAIL` | `admin@usetether.ca` | Email for the initial MSP admin account (first run only) |
-| `ADMIN_PASSWORD` | `admin` | Password for the initial MSP admin account (first run only) |
-| `ADMIN_NAME` | `MSP Admin` | Display name for the initial MSP admin |
-| `DEFAULT_TENANT_SLUG` | `demo` | Slug for the demo tenant created on first run |
-| `DEFAULT_TENANT_NAME` | `Demo Client` | Name for the demo tenant created on first run |
 | `TETHER_DATA` | `./data` | Directory where the SQLite database is stored |
+
+### Admin account (first run only)
+
+In `selfhosted`/`saas` mode this creates the MSP admin. In `standalone` mode this creates your company admin.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ADMIN_EMAIL` | `admin@usetether.ca` | Login email for the initial admin account |
+| `ADMIN_PASSWORD` | `admin` | Password for the initial admin account |
+| `ADMIN_NAME` | `Admin` | Display name for the initial admin account |
+
+### Company / default tenant (first run only)
+
+In `standalone` mode this is your company. In MSP mode this is the first demo/default client tenant.
+
+| Variable | Default (standalone) | Default (MSP) | Description |
+|----------|---------------------|---------------|-------------|
+| `DEFAULT_TENANT_NAME` | `My Company` | `Demo Client` | Company or tenant name |
+| `DEFAULT_TENANT_SLUG` | `mycompany` | `demo` | URL slug — used for subdomain routing in MSP mode |
 
 ### Database
 
@@ -173,16 +257,18 @@ systemctl status tether
 
 ## DNS Setup
 
-Tether uses subdomains to separate clients. You need two DNS records pointing to your server:
+**Standalone mode:** no special DNS needed. Point your domain at the server with a single A record.
+
+**MSP / SaaS mode:** Tether uses subdomains to separate clients. You need two records:
 
 | Type | Name | Value |
 |------|------|-------|
-| A | `usetether.ca` | your server IP |
-| A | `*.usetether.ca` | your server IP |
+| A | `yourdomain.com` | your server IP |
+| A | `*.yourdomain.com` | your server IP |
 
-The wildcard `*` record means every client subdomain (`acme.usetether.ca`, `nexus.usetether.ca`, etc.) resolves automatically without adding a record per client.
+The wildcard record means every client subdomain (`acme.yourdomain.com`, `nexus.yourdomain.com`, etc.) resolves automatically without adding a record per client.
 
-If you're running Tether on a different domain, set `BASE_DOMAIN` in your `.env` to match and add the equivalent DNS records.
+Set `BASE_DOMAIN` in `.env` to match your domain.
 
 ---
 
@@ -195,8 +281,6 @@ Tether supports three database backends. The priority order is:
 3. **SQLite** — zero-config fallback, used automatically if neither of the above is set
 
 ### MariaDB (recommended for production)
-
-Tether is designed with MariaDB as the preferred production database, consistent with tools like Snipe-IT that MSPs are already familiar with.
 
 **Docker:** MariaDB is included automatically — `docker compose up` starts both the app and a MariaDB 11 container with no extra setup.
 
@@ -218,13 +302,26 @@ DB_NAME=tether
 
 ### SQLite (zero-config)
 
-Leave `DB_HOST` unset and Tether creates a SQLite file at `data/tether.db`. No installation required. Good for evaluation, development, or low-traffic self-hosted installs.
+Leave `DB_HOST` unset and Tether creates a SQLite file at `data/tether.db`. No installation required. Good for evaluation, development, or low-traffic installs.
 
 ### PostgreSQL
 
 ```
 DATABASE_URL=postgresql://user:pass@host:5432/tether
 ```
+
+---
+
+## MSP Features
+
+### Navigating clients
+
+- Click any **client name** in the dashboard or Clients page to jump straight into that client's view
+- While inside a client, an **← All Clients** button appears in the sidebar to return to the MSP root
+
+### Preview as client
+
+Each client row in the Clients page has a **preview (eye) button**. Clicking it opens a new browser tab logged in as a read-only demo user for that tenant — letting you see exactly what that client's users see without sharing credentials or creating a real account. The preview session expires when the tab is closed.
 
 ---
 
@@ -281,12 +378,12 @@ tether/
 │       ├── users.py          # People / employees
 │       ├── requests.py       # Asset requests
 │       ├── dashboard.py      # Stats endpoint
-│       ├── tenants.py        # Tenant management
+│       ├── tenants.py        # Tenant management (MSP)
 │       ├── user_mgmt.py      # User CRUD, roles, permissions
 │       ├── invites.py        # Invite-based onboarding
 │       ├── billing_router.py # Billing endpoints
 │       ├── stripe_router.py  # Stripe webhooks
-│       ├── admin_router.py   # Admin panel
+│       ├── admin_router.py   # Admin panel + preview-token endpoint
 │       └── demo.py           # Demo mode (DEPLOYMENT_MODE=demo only)
 ├── frontend/
 │   ├── templates/index.html  # SPA shell
@@ -294,13 +391,13 @@ tether/
 │       ├── css/style.css
 │       └── js/
 │           ├── app.js        # API layer, auth, router, helpers
-│           ├── views.js      # Login, shell, dashboard
+│           ├── views.js      # Login, shell, dashboard, MSP views
 │           ├── views2.js     # Assets, categories, locations, people, settings
 │           ├── icons.js      # Inline SVG icon set
 │           └── chart.umd.js  # Chart.js (vendored, no CDN required)
 ├── tests/
 │   ├── conftest.py           # Shared fixtures (client, auth, tenant)
-│   ├── test_admin.py
+│   ├── test_admin.py         # Admin endpoints + preview-token
 │   ├── test_assets.py
 │   ├── test_auth.py
 │   ├── test_billing.py
@@ -309,9 +406,10 @@ tether/
 │   ├── test_employees.py
 │   ├── test_locations.py
 │   ├── test_password_reset.py
-│   ├── test_public.py
+│   ├── test_public.py        # Public endpoints + standalone branding
 │   ├── test_requests.py
 │   ├── test_signup.py
+│   ├── test_standalone.py    # Standalone mode seeding + login
 │   ├── test_stripe.py
 │   ├── test_tenants.py
 │   └── test_users.py
@@ -332,22 +430,102 @@ All endpoints under `/api/*` (except `/api/auth/login` and `/api/assets/{id}/qr`
 
 ---
 
-## Backup
+## Data Storage
 
-The entire database is a single file. To back it up manually:
+### Where data lives
+
+| Setup | What's stored | Where |
+|-------|--------------|-------|
+| Docker + MariaDB (default) | All app data | Docker volume `tether_db` — inside MariaDB |
+| Docker + SQLite fallback | SQLite file + uploads | Docker volume `tether_data` mounted at `/data` |
+| Bare-metal | SQLite file + uploads | Directory set by `TETHER_DATA` env var (default `./data`) |
+
+**Docker volumes are not deleted** by `docker compose down` or `docker compose build`. They persist until you explicitly run `docker volume rm` or `docker compose down -v`.
+
+### Changing where data is stored (Docker)
+
+To move MariaDB data to a host directory instead of a managed Docker volume, edit `docker-compose.yml`:
+
+```yaml
+# Before (managed Docker volume — data is inside Docker)
+volumes:
+  - tether_db:/var/lib/mysql
+
+# After (bind mount — data is at /opt/tether/db on your host)
+volumes:
+  - /opt/tether/db:/var/lib/mysql
+```
+
+Do the same for app uploads / SQLite if needed:
+
+```yaml
+volumes:
+  - /opt/tether/data:/data
+```
+
+Then stop, migrate the data, and restart:
 
 ```bash
-# Docker
+docker compose down
+# Copy existing volume contents to the new host path first
+sudo mkdir -p /opt/tether/db
+docker run --rm -v tether_db:/from -v /opt/tether/db:/to alpine sh -c "cp -a /from/. /to/"
+docker compose up -d
+```
+
+### Changing the database backend
+
+You can switch Tether from SQLite to MariaDB (or vice versa) at any time. The database is re-seeded only on the very first run (when the tables are empty), so switching backends on an existing install will start with a fresh database unless you migrate the data manually.
+
+**SQLite → MariaDB:** set `DB_HOST`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` in `.env` and restart. Tether creates the schema automatically.
+
+**MariaDB → SQLite:** remove the `DB_HOST` / `DB_USER` / `DB_PASSWORD` vars (or set `DATABASE_URL=sqlite:///./data/tether.db`) and restart.
+
+**Migrating data between backends** requires a manual dump/restore — use `mysqldump` for MariaDB exports, or a tool like `pgloader` for PostgreSQL.
+
+---
+
+## Backup
+
+### Manual backup
+
+```bash
+# Docker — MariaDB
+docker exec tether-db sh -c \
+  "mysqldump -u tether -p\$MARIADB_PASSWORD tether" \
+  > tether-$(date +%Y%m%d).sql
+
+# Docker — SQLite (if using SQLite fallback)
 docker run --rm -v tether_data:/data -v $(pwd):/backup alpine \
   cp /data/tether.db /backup/tether-$(date +%Y%m%d).db
 
-# Bare-metal
+# Bare-metal — SQLite
 cp data/tether.db backups/tether-$(date +%Y%m%d).db
 ```
 
-To restore, stop the server, replace the file, and restart.
+### Restore
 
-For automated backups to S3, set `BACKUP_ENABLED=true` and the `BACKUP_S3_*` variables in `.env`.
+```bash
+# Docker — MariaDB
+docker exec -i tether-db sh -c \
+  "mysql -u tether -p\$MARIADB_PASSWORD tether" \
+  < tether-20240101.sql
+
+# Docker — SQLite
+docker compose down
+docker run --rm -v tether_data:/data -v $(pwd):/backup alpine \
+  cp /backup/tether-20240101.db /data/tether.db
+docker compose up -d
+
+# Bare-metal — SQLite
+systemctl stop tether
+cp backups/tether-20240101.db data/tether.db
+systemctl start tether
+```
+
+### Automated S3 backups
+
+Set `BACKUP_ENABLED=true` and the `BACKUP_S3_*` variables in `.env` to enable scheduled backups to any S3-compatible storage (AWS S3, Backblaze B2, Cloudflare R2, DigitalOcean Spaces, MinIO).
 
 ---
 

@@ -9,6 +9,17 @@ function renderLogin() {
     ? `<img src="${esc(logo)}" alt="${name}" style="max-height:48px;max-width:160px;object-fit:contain;margin-bottom:6px">`
     : `<div class="login-logo"><div class="mark"><span></span></div><b>${name}</b></div>`;
 
+  const demoHtml = State.demo?.enabled ? `
+    <div class="demo-divider"><span>or try the demo</span></div>
+    <div class="demo-btns">
+      <button id="demo-btn-client" class="btn btn-ghost demo-btn" onclick="loginAsDemo('client')">
+        ${icon('users', 14)} Client User
+      </button>
+      <button id="demo-btn-msp" class="btn btn-ghost demo-btn" onclick="loginAsDemo('msp')">
+        ${icon('layers', 14)} MSP Admin
+      </button>
+    </div>` : '';
+
   document.getElementById('app').innerHTML = `
     <div class="login-wrap">
       <div class="login-card">
@@ -28,6 +39,7 @@ function renderLogin() {
             <a href="/forgot-password" style="font-size:13px;color:var(--text-muted)">Forgot your password?</a>
           </div>
         </form>
+        ${demoHtml}
       </div>
       ${!isTenant ? '' : `<p style="margin-top:16px;font-size:12px;color:rgba(255,255,255,.35);text-align:center">
         Powered by Tether</p>`}
@@ -161,6 +173,10 @@ function renderApp() {
         ${isMSP() ? `<div class="sidebar-context">
           <div class="ctx-label">Viewing</div>
           <div class="ctx-val">${esc(State.settings?.name || 'All Clients')}</div>
+          ${State.settings?.mode === 'tenant' ? `
+            <button class="btn btn-ghost btn-sm back-to-msp" onclick="backToMsp()">
+              ${icon('back', 13)} All Clients
+            </button>` : ''}
         </div>` : ''}
         <nav class="nav">${navHtml}</nav>
         <div class="sidebar-foot">
@@ -179,6 +195,11 @@ function renderApp() {
           <button onclick="toggleSidebar(true)">${icon('menu', 20)}</button>
           <b style="font-family:var(--display);font-size:18px">${esc(State.settings?.name || 'Tether')}</b>
         </div>
+        ${State.demo?.enabled ? `
+        <div class="demo-banner">
+          ${icon('eye', 15)} Demo mode — data resets hourly.
+          <button class="btn btn-ghost btn-sm" style="margin-left:auto" onclick="logout()">Sign out</button>
+        </div>` : ''}
         <div id="page"></div>
       </main>
     </div>`;
@@ -261,7 +282,8 @@ function renderMspDashboard(s) {
 
   const rows = s.clients.map(c => `
     <tr>
-      <td><b>${esc(c.name)}</b> <span class="tag muted" style="font-size:11px">${esc(c.slug)}</span></td>
+      <td><b class="client-link" onclick="jumpToClient('${esc(c.slug)}')">${esc(c.name)}</b>
+          <span class="tag muted" style="font-size:11px">${esc(c.slug)}</span></td>
       <td>${c.total_assets}</td>
       <td>${c.deployed}</td>
       <td>$${c.total_value.toLocaleString()}</td>
@@ -376,6 +398,36 @@ function jumpToClient(slug) {
   window.location.href = `//${slug}.${h}${port}`;
 }
 
+function backToMsp() {
+  const h = location.hostname;
+  const port = location.port ? ':' + location.port : '';
+  if (h === 'localhost' || h === '127.0.0.1') {
+    window.location.href = `${location.protocol}//${h}${port}/`;
+    return;
+  }
+  // Strip the leading subdomain to get back to the root domain
+  const parts = h.split('.');
+  const base = parts.length > 2 ? parts.slice(1).join('.') : h;
+  window.location.href = `//${base}${port}`;
+}
+
+async function previewAsClient(tid, slug) {
+  try {
+    const data = await api(`/admin/tenants/${tid}/preview-token`, { method: 'POST' });
+    const h = location.hostname;
+    const port = location.port ? ':' + location.port : '';
+    let url;
+    if (h === 'localhost' || h === '127.0.0.1') {
+      url = `${location.protocol}//${h}${port}/?preview_token=${encodeURIComponent(data.token)}&tenant=${encodeURIComponent(slug)}`;
+    } else {
+      url = `//${slug}.${h}${port}/?preview_token=${encodeURIComponent(data.token)}`;
+    }
+    window.open(url, '_blank');
+  } catch (e) {
+    toast(e.message, 'err');
+  }
+}
+
 // ============ MSP CLIENTS PAGE ============
 async function pageClients() {
   const page = document.getElementById('page');
@@ -393,7 +445,7 @@ async function pageClients() {
 
   const rows = clients.map(c => `
     <tr>
-      <td><b>${esc(c.name)}</b></td>
+      <td><b class="client-link" onclick="jumpToClient('${esc(c.slug)}')">${esc(c.name)}</b></td>
       <td><span class="tag">${esc(c.slug)}</span></td>
       <td>${c.asset_count}</td>
       <td>${c.user_count}</td>
@@ -403,6 +455,7 @@ async function pageClients() {
           <button class="btn btn-ghost btn-sm" onclick="openClientForm(${c.id})">${icon('edit', 14)}</button>
           <button class="btn btn-ghost btn-sm" onclick="openClientUsers(${c.id},'${esc(c.name)}')">${icon('users', 14)} Users</button>
           <button class="btn btn-ghost btn-sm" onclick="openInviteForm(${c.id},'${esc(c.name)}')">${icon('plus', 14)} Invite</button>
+          <button class="btn btn-ghost btn-sm" title="Preview as client" onclick="previewAsClient(${c.id},'${esc(c.slug)}')">${icon('eye', 14)}</button>
           <button class="btn btn-ghost btn-sm" onclick="jumpToClient('${esc(c.slug)}')">${icon('arrowOut', 14)}</button>
           <button class="btn btn-danger btn-sm" onclick="deleteClient(${c.id})">${icon('trash', 14)}</button>
         </div>
