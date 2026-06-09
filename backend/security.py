@@ -95,7 +95,7 @@ def resolve_tenant_slug(request: Request) -> Optional[str]:
     host = request.headers.get("host", "").split(":")[0]  # strip port
     base = BASE_DOMAIN.split(":")[0]
 
-    if host == base or host in ("localhost", "127.0.0.1", "testclient"):
+    if host == base or host in ("localhost", "127.0.0.1", "testclient", "testserver"):
         return None
     if host.endswith("." + base):
         return host[: -(len(base) + 1)]
