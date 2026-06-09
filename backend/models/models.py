@@ -8,14 +8,18 @@ from db.database import Base
 
 class Tenant(Base):
     __tablename__ = "tenants"
-    id            = Column(Integer, primary_key=True)
-    name          = Column(String(120), nullable=False)
-    slug          = Column(String(120), unique=True, nullable=False, index=True)
-    logo_url      = Column(String(500), default="")
-    accent_color  = Column(String(20), default="#d4f034")
-    currency      = Column(String(10), default="USD")
-    active        = Column(Boolean, default=True)
-    created_at    = Column(DateTime, default=datetime.utcnow)
+    id                 = Column(Integer, primary_key=True)
+    name               = Column(String(120), nullable=False)
+    slug               = Column(String(120), unique=True, nullable=False, index=True)
+    logo_url           = Column(String(500), default="")
+    accent_color       = Column(String(20), default="#d4f034")
+    currency           = Column(String(10), default="USD")
+    active             = Column(Boolean, default=True)
+    created_at         = Column(DateTime, default=datetime.utcnow)
+    email_from_name    = Column(String(120), nullable=True)
+    email_from_address = Column(String(320), nullable=True)
+    email_logo_url     = Column(String(500), nullable=True)
+    email_accent_color = Column(String(20), nullable=True)
 
     users          = relationship("User", back_populates="tenant", cascade="all, delete-orphan")
     assets         = relationship("Asset", back_populates="tenant", cascade="all, delete-orphan")
@@ -170,6 +174,8 @@ class Asset(Base):
     location_id   = Column(Integer, ForeignKey("locations.id"), nullable=True)
     assigned_to_id = Column(Integer, ForeignKey("employees.id"), nullable=True)
 
+    useful_life_years = Column(Integer, nullable=True)
+    salvage_value     = Column(Float, nullable=True)
     created_at    = Column(DateTime, default=datetime.utcnow)
     updated_at    = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -190,6 +196,42 @@ class CheckoutLog(Base):
     note          = Column(String(500), default="")
     timestamp     = Column(DateTime, default=datetime.utcnow)
     asset         = relationship("Asset", back_populates="history")
+
+
+# ── Software licences ─────────────────────────────────────────────────────────
+
+class SoftwareLicence(Base):
+    __tablename__ = "software_licences"
+    id            = Column(Integer, primary_key=True)
+    tenant_id     = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
+    name          = Column(String(200), nullable=False)
+    vendor        = Column(String(120), default="")
+    licence_type  = Column(String(80), default="")
+    total_seats   = Column(Integer, nullable=True)
+    purchase_date = Column(Date, nullable=True)
+    expiry_date   = Column(Date, nullable=True)
+    purchase_cost = Column(Float, nullable=True)
+    renewal_cost  = Column(Float, nullable=True)
+    licence_key   = Column(Text, default="")
+    notes         = Column(Text, default="")
+    created_at    = Column(DateTime, default=datetime.utcnow)
+    updated_at    = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    tenant        = relationship("Tenant")
+    assignments   = relationship("LicenceAssignment", back_populates="licence",
+                                 cascade="all, delete-orphan")
+
+
+class LicenceAssignment(Base):
+    __tablename__ = "licence_assignments"
+    id          = Column(Integer, primary_key=True)
+    licence_id  = Column(Integer, ForeignKey("software_licences.id"), nullable=False)
+    employee_id = Column(Integer, ForeignKey("employees.id"), nullable=True)
+    asset_id    = Column(Integer, ForeignKey("assets.id"), nullable=True)
+    assigned_at = Column(DateTime, default=datetime.utcnow)
+    notes       = Column(String(500), default="")
+    licence     = relationship("SoftwareLicence", back_populates="assignments")
+    employee    = relationship("Employee")
+    asset       = relationship("Asset")
 
 
 # ── Invite tokens ─────────────────────────────────────────────────────────────
@@ -225,6 +267,35 @@ class AuditLog(Base):
     resource_id = Column(String(80), default="")
     detail      = Column(Text, default="")
     ip_address  = Column(String(64), default="")
+
+
+# ── Custom fields ─────────────────────────────────────────────────────────────
+
+class CustomFieldDef(Base):
+    """Per-tenant field definition (label + type). MSP creates these."""
+    __tablename__ = "custom_field_defs"
+    __table_args__ = (UniqueConstraint("tenant_id", "label"),)
+    id         = Column(Integer, primary_key=True)
+    tenant_id  = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
+    label      = Column(String(80), nullable=False)
+    field_type = Column(String(20), default="text")   # text | number | date | boolean | url
+    required   = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    tenant     = relationship("Tenant")
+    values     = relationship("CustomFieldValue", back_populates="field_def",
+                              cascade="all, delete-orphan")
+
+
+class CustomFieldValue(Base):
+    """Per-asset value for a custom field definition."""
+    __tablename__ = "custom_field_values"
+    __table_args__ = (UniqueConstraint("field_def_id", "asset_id"),)
+    id           = Column(Integer, primary_key=True)
+    field_def_id = Column(Integer, ForeignKey("custom_field_defs.id"), nullable=False, index=True)
+    asset_id     = Column(Integer, ForeignKey("assets.id"), nullable=False, index=True)
+    value        = Column(Text, default="")
+    field_def    = relationship("CustomFieldDef", back_populates="values")
+    asset        = relationship("Asset")
 
 
 class AssetRequest(Base):

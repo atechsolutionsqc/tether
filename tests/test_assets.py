@@ -323,3 +323,321 @@ class TestPagination:
         # CSV row count (minus header) should equal total from the paginated endpoint
         csv_rows = [line for line in r_csv.text.strip().splitlines() if line][1:]
         assert len(csv_rows) == r_list.json()["total"]
+
+
+def _create_client_viewer_headers(client, auth, tenant, roles):
+    """Create a client_viewer user and return auth headers scoped to the fixture tenant."""
+    email = f"viewer_{_tag()}@test.com"
+    r = client.post("/api/users", json={
+        "name": "Bulk Viewer", "email": email, "password": "Secure123!",
+        "role_id": roles["client_viewer"]["id"],
+        "tenant_id": tenant["id"], "is_msp_staff": False, "active": True,
+    }, headers=auth)
+    assert r.status_code == 200, r.text
+    lr = client.post("/api/auth/login", data={"username": email, "password": "Secure123!"})
+    assert lr.status_code == 200
+    return {"Authorization": f"Bearer {lr.json()['access_token']}",
+            "host": f"{tenant['slug']}.localhost"}
+
+
+class TestBulkActions:
+    def _make_assets(self, client, tenant_headers, n=3):
+        ids = []
+        for _ in range(n):
+            r = client.post("/api/assets", json={
+                "asset_tag": _tag(), "name": "Bulk Asset", "status": "available",
+            }, headers=tenant_headers)
+            assert r.status_code == 200
+            ids.append(r.json()["id"])
+        return ids
+
+    # ── bulk/status ────────────────────────────────────────────────────────────
+
+    def test_bulk_status_updates_all(self, client, tenant_headers):
+        ids = self._make_assets(client, tenant_headers, 3)
+        r = client.post("/api/assets/bulk/status",
+                        json={"asset_ids": ids, "status": "maintenance"},
+                        headers=tenant_headers)
+        assert r.status_code == 200
+        data = r.json()
+        assert data["updated"] == 3
+        assert data["skipped"] == 0
+        for aid in ids:
+            a = client.get(f"/api/assets/{aid}", headers=tenant_headers).json()
+            assert a["status"] == "maintenance"
+
+    def test_bulk_status_rejects_invalid_status(self, client, tenant_headers):
+        ids = self._make_assets(client, tenant_headers, 1)
+        r = client.post("/api/assets/bulk/status",
+                        json={"asset_ids": ids, "status": "broken"},
+                        headers=tenant_headers)
+        assert r.status_code == 400
+
+    def test_bulk_status_skips_other_tenant_assets(self, client, auth, tenant_headers):
+        import time
+        uid = int(time.time() * 1000) % 999999
+        other_t = client.post("/api/tenants", json={
+            "name": f"OtherBulk {uid}", "slug": f"otherbulk{uid}", "currency": "CAD",
+        }, headers=auth).json()
+        other_h = {**auth, "host": f"otherbulk{uid}.localhost"}
+        other_asset = client.post("/api/assets", json={
+            "asset_tag": _tag(), "name": "Other Tenant Asset", "status": "available",
+        }, headers=other_h).json()
+
+        my_ids = self._make_assets(client, tenant_headers, 2)
+        all_ids = my_ids + [other_asset["id"]]
+
+        r = client.post("/api/assets/bulk/status",
+                        json={"asset_ids": all_ids, "status": "retired"},
+                        headers=tenant_headers)
+        assert r.status_code == 200
+        data = r.json()
+        assert data["updated"] == 2
+        assert data["skipped"] == 1
+        # other tenant's asset should be unchanged
+        other_check = client.get(f"/api/assets/{other_asset['id']}", headers=other_h)
+        assert other_check.json()["status"] == "available"
+
+    def test_bulk_status_requires_auth(self, client, tenant):
+        r = client.post("/api/assets/bulk/status",
+                        json={"asset_ids": [1], "status": "available"},
+                        headers={"host": f"{tenant['slug']}.localhost"})
+        assert r.status_code == 401
+
+    # ── bulk/location ──────────────────────────────────────────────────────────
+
+    def test_bulk_location_updates_all(self, client, tenant_headers, tenant, auth):
+        ids = self._make_assets(client, tenant_headers, 2)
+        # get a location that belongs to this tenant
+        locs = client.get("/api/locations", headers=tenant_headers).json()
+        assert locs, "No locations seeded for fixture tenant"
+        loc_id = locs[0]["id"]
+
+        r = client.post("/api/assets/bulk/location",
+                        json={"asset_ids": ids, "location_id": loc_id},
+                        headers=tenant_headers)
+        assert r.status_code == 200
+        data = r.json()
+        assert data["updated"] == 2
+        assert data["skipped"] == 0
+        for aid in ids:
+            a = client.get(f"/api/assets/{aid}", headers=tenant_headers).json()
+            assert a["location_id"] == loc_id
+
+    def test_bulk_location_rejects_foreign_location(self, client, auth, tenant_headers):
+        import time
+        uid = int(time.time() * 1000) % 999999
+        other_t = client.post("/api/tenants", json={
+            "name": f"ForeignLoc {uid}", "slug": f"foreignloc{uid}", "currency": "CAD",
+        }, headers=auth).json()
+        other_h = {**auth, "host": f"foreignloc{uid}.localhost"}
+        foreign_locs = client.get("/api/locations", headers=other_h).json()
+        assert foreign_locs, "No locations for foreign tenant"
+        foreign_loc_id = foreign_locs[0]["id"]
+
+        ids = self._make_assets(client, tenant_headers, 1)
+        r = client.post("/api/assets/bulk/location",
+                        json={"asset_ids": ids, "location_id": foreign_loc_id},
+                        headers=tenant_headers)
+        assert r.status_code == 400
+
+    def test_bulk_location_requires_auth(self, client, tenant):
+        r = client.post("/api/assets/bulk/location",
+                        json={"asset_ids": [1], "location_id": 1},
+                        headers={"host": f"{tenant['slug']}.localhost"})
+        assert r.status_code == 401
+
+    # ── bulk/delete ────────────────────────────────────────────────────────────
+
+    def test_bulk_delete_removes_assets(self, client, tenant_headers):
+        ids = self._make_assets(client, tenant_headers, 3)
+        r = client.post("/api/assets/bulk/delete",
+                        json={"asset_ids": ids},
+                        headers=tenant_headers)
+        assert r.status_code == 200
+        data = r.json()
+        assert data["deleted"] == 3
+        assert data["skipped"] == 0
+        for aid in ids:
+            check = client.get(f"/api/assets/{aid}", headers=tenant_headers)
+            assert check.status_code == 404
+
+    def test_bulk_delete_skips_other_tenant_assets(self, client, auth, tenant_headers):
+        import time
+        uid = int(time.time() * 1000) % 999999
+        other_t = client.post("/api/tenants", json={
+            "name": f"OtherDel {uid}", "slug": f"otherdel{uid}", "currency": "CAD",
+        }, headers=auth).json()
+        other_h = {**auth, "host": f"otherdel{uid}.localhost"}
+        other_asset = client.post("/api/assets", json={
+            "asset_tag": _tag(), "name": "Other Del Asset", "status": "available",
+        }, headers=other_h).json()
+
+        my_ids = self._make_assets(client, tenant_headers, 2)
+        r = client.post("/api/assets/bulk/delete",
+                        json={"asset_ids": my_ids + [other_asset["id"]]},
+                        headers=tenant_headers)
+        assert r.status_code == 200
+        data = r.json()
+        assert data["deleted"] == 2
+        assert data["skipped"] == 1
+        # other tenant's asset survived
+        check = client.get(f"/api/assets/{other_asset['id']}", headers=other_h)
+        assert check.status_code == 200
+
+    def test_bulk_delete_requires_auth(self, client, tenant):
+        r = client.post("/api/assets/bulk/delete",
+                        json={"asset_ids": [1]},
+                        headers={"host": f"{tenant['slug']}.localhost"})
+        assert r.status_code == 401
+
+    def test_bulk_delete_requires_delete_permission(self, client, auth, tenant, roles):
+        viewer_h = _create_client_viewer_headers(client, auth, tenant, roles)
+        ids = self._make_assets(client, {**auth, "host": f"{tenant['slug']}.localhost"}, 1)
+        r = client.post("/api/assets/bulk/delete",
+                        json={"asset_ids": ids},
+                        headers=viewer_h)
+        assert r.status_code == 403
+
+
+class TestActivityFeed:
+    """Tests for GET /api/assets/activity."""
+
+    @staticmethod
+    def _make_asset(client, tenant_headers):
+        r = client.post("/api/assets", json={
+            "asset_tag": _tag(), "name": "Activity Asset", "status": "available",
+        }, headers=tenant_headers)
+        assert r.status_code == 200
+        return r.json()
+
+    @staticmethod
+    def _checkout(client, tenant_headers, asset_id, employee_id):
+        return client.post(f"/api/assets/{asset_id}/checkout", json={
+            "employee_id": employee_id, "note": "Test checkout note",
+        }, headers=tenant_headers)
+
+    @staticmethod
+    def _checkin(client, tenant_headers, asset_id):
+        return client.post(f"/api/assets/{asset_id}/checkin", json={
+            "note": "Test checkin note",
+        }, headers=tenant_headers)
+
+    def test_returns_correct_shape(self, client, tenant_headers):
+        r = client.get("/api/assets/activity", headers=tenant_headers)
+        assert r.status_code == 200
+        data = r.json()
+        for key in ("items", "total", "limit", "offset"):
+            assert key in data, f"Missing key: {key}"
+        assert isinstance(data["items"], list)
+        assert data["limit"] == 50
+        assert data["offset"] == 0
+
+    def test_checkout_event_appears(self, client, tenant_headers, fresh_employee):
+        asset = self._make_asset(client, tenant_headers)
+        self._checkout(client, tenant_headers, asset["id"], fresh_employee["id"])
+
+        r = client.get(
+            f"/api/assets/activity?action=checkout&asset_id={asset['id']}",
+            headers=tenant_headers,
+        )
+        assert r.status_code == 200
+        items = r.json()["items"]
+        assert len(items) >= 1
+        ev = items[0]
+        assert ev["action"] == "checkout"
+        assert ev["asset_tag"] == asset["asset_tag"]
+        assert ev["actor_type"] == "employee"
+        assert "timestamp" in ev
+
+    def test_checkin_event_appears(self, client, tenant_headers, fresh_employee):
+        asset = self._make_asset(client, tenant_headers)
+        self._checkout(client, tenant_headers, asset["id"], fresh_employee["id"])
+        self._checkin(client, tenant_headers, asset["id"])
+
+        r = client.get(
+            f"/api/assets/activity?action=checkin&asset_id={asset['id']}",
+            headers=tenant_headers,
+        )
+        assert r.status_code == 200
+        items = r.json()["items"]
+        assert any(ev["action"] == "checkin" for ev in items)
+
+    def test_action_filter_returns_only_matching_type(self, client, tenant_headers, fresh_employee):
+        asset = self._make_asset(client, tenant_headers)
+        self._checkout(client, tenant_headers, asset["id"], fresh_employee["id"])
+        self._checkin(client, tenant_headers, asset["id"])
+
+        for action in ("checkout", "checkin"):
+            r = client.get(
+                f"/api/assets/activity?action={action}",
+                headers=tenant_headers,
+            )
+            assert r.status_code == 200
+            items = r.json()["items"]
+            assert all(ev["action"] == action for ev in items), \
+                f"Expected only '{action}' events, got: {[ev['action'] for ev in items]}"
+
+    def test_asset_id_filter(self, client, tenant_headers, fresh_employee):
+        a1 = self._make_asset(client, tenant_headers)
+        a2 = self._make_asset(client, tenant_headers)
+        self._checkout(client, tenant_headers, a1["id"], fresh_employee["id"])
+        self._checkout(client, tenant_headers, a2["id"], fresh_employee["id"])
+
+        r = client.get(
+            f"/api/assets/activity?asset_id={a1['id']}",
+            headers=tenant_headers,
+        )
+        assert r.status_code == 200
+        items = r.json()["items"]
+        # All returned events must be for a1
+        asset_tags = {ev["asset_tag"] for ev in items}
+        assert asset_tags == {a1["asset_tag"]}, \
+            f"Expected only {a1['asset_tag']!r}, got {asset_tags}"
+
+    def test_limit_and_offset(self, client, tenant_headers, fresh_employee):
+        # Create two assets and check them out to ensure at least 2 checkout events
+        a1 = self._make_asset(client, tenant_headers)
+        a2 = self._make_asset(client, tenant_headers)
+        self._checkout(client, tenant_headers, a1["id"], fresh_employee["id"])
+        self._checkin(client, tenant_headers, a1["id"])
+        self._checkout(client, tenant_headers, a2["id"], fresh_employee["id"])
+
+        r1 = client.get(
+            "/api/assets/activity?action=checkout&limit=1&offset=0",
+            headers=tenant_headers,
+        )
+        r2 = client.get(
+            "/api/assets/activity?action=checkout&limit=1&offset=1",
+            headers=tenant_headers,
+        )
+        assert r1.status_code == 200
+        assert r2.status_code == 200
+        assert r1.json()["total"] == r2.json()["total"]
+        assert len(r1.json()["items"]) == 1
+        # Different events at different offsets
+        if r2.json()["items"]:
+            assert r1.json()["items"][0]["id"] != r2.json()["items"][0]["id"]
+
+    def test_requires_authentication(self, client, tenant):
+        r = client.get("/api/assets/activity",
+                       headers={"host": f"{tenant['slug']}.localhost"})
+        assert r.status_code == 401
+
+    def test_cross_tenant_isolation(self, client, auth, tenant_headers, fresh_employee):
+        """Activity from tenant A is not visible to tenant B."""
+        other_slug = f"act-iso-{_tag()}"
+        client.post("/api/tenants", json={
+            "name": "Activity Iso Corp", "slug": other_slug,
+        }, headers=auth)
+        other_h = {**auth, "host": f"{other_slug}.localhost"}
+
+        # Create checkout in the fixture tenant
+        asset = self._make_asset(client, tenant_headers)
+        self._checkout(client, tenant_headers, asset["id"], fresh_employee["id"])
+
+        # Other tenant's activity feed must not contain this event
+        r = client.get("/api/assets/activity", headers=other_h)
+        assert r.status_code == 200
+        tags = {ev["asset_tag"] for ev in r.json()["items"]}
+        assert asset["asset_tag"] not in tags

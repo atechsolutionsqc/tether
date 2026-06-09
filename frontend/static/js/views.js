@@ -137,6 +137,7 @@ function buildNav() {
   const client = [
     { id: 'dashboard', label: 'Dashboard', icon: 'dashboard' },
     { id: 'assets',    label: 'Assets',    icon: 'box' },
+    { id: 'licences',  label: 'Licences',  icon: 'layers' },
     { id: 'requests',  label: 'Requests',  icon: 'activity' },
     { id: 'categories',label: 'Categories',icon: 'layers' },
     { id: 'locations', label: 'Locations', icon: 'pin' },
@@ -150,6 +151,12 @@ function buildNav() {
 }
 
 function renderApp() {
+  // client_viewer (no assets.create) gets the simplified portal
+  if (!isMSP() && !can('assets.create')) {
+    renderClientPortal();
+    return;
+  }
+
   const u   = State.user;
   const nav = buildNav();
   const initial = (u?.name || '?')[0].toUpperCase();
@@ -220,11 +227,323 @@ function renderApp() {
     employees:  pageEmployees,
     team:       pageTeam,
     settings:   pageSettings,
-    reports:    pageReports,
+    reports:             pageReports,
+    'reports-warranty':  pageReportWarranty,
+    'reports-value':     pageReportValue,
+    'reports-depreciation': pageReportDepreciation,
+    licences:   pageLicences,
+    activity:   pageActivity,
   };
   (routes[State.route] || pageDashboard)();
   // Load usage bar asynchronously — non-blocking
   if (isMSP()) loadSidebarUsage();
+}
+
+// ============ CLIENT PORTAL ============
+
+let _portalTab = 'overview';
+let _portalAssets = [];
+let _portalRequests = [];
+let _portalEmployeeId = null;
+
+async function renderClientPortal() {
+  const u   = State.user;
+  const s   = State.settings || {};
+  const tenantName = esc(s.name || 'Your Company');
+
+  const logoHtml = s.logo_url
+    ? `<img src="${esc(s.logo_url)}" alt="${tenantName}"
+         style="max-height:36px;max-width:150px;object-fit:contain">`
+    : `<span style="font-family:var(--display);font-size:20px;font-weight:700;
+                    color:var(--accent);letter-spacing:-.5px">${tenantName}</span>`;
+
+  document.getElementById('app').innerHTML = `
+    <div style="min-height:100vh;background:var(--bg);display:flex;flex-direction:column">
+      <header style="background:var(--ink);padding:0 24px;height:56px;display:flex;
+                     align-items:center;justify-content:space-between;flex-shrink:0">
+        <div>${logoHtml}</div>
+        <div style="display:flex;align-items:center;gap:14px">
+          <span style="color:rgba(255,255,255,.65);font-size:13.5px">${esc(u?.name || '')}</span>
+          <button class="btn btn-ghost btn-sm" style="color:rgba(255,255,255,.7)"
+            onclick="logout()">${icon('logout', 14)} Sign out</button>
+        </div>
+      </header>
+      <nav id="portal-nav" style="background:var(--ink);border-top:1px solid rgba(255,255,255,.08);
+           padding:0 24px;display:flex;gap:0">
+        ${['overview','my-assets','requests'].map(t => `
+          <button id="ptab-${t}" onclick="portalSwitchTab('${t}')"
+            style="background:none;border:none;border-bottom:2px solid ${_portalTab===t?'var(--accent)':'transparent'};
+                   color:${_portalTab===t?'var(--accent)':'rgba(255,255,255,.55)'};
+                   padding:12px 18px;font-size:13.5px;font-weight:${_portalTab===t?'600':'400'};
+                   cursor:pointer;transition:color .15s,border-color .15s">
+            ${t==='overview'?'Overview':t==='my-assets'?'My Assets':'Requests'}
+          </button>`).join('')}
+      </nav>
+      <div id="portal-body" style="flex:1;padding:28px 24px;max-width:960px;width:100%;margin:0 auto">
+        <div class="loading"><div class="spinner"></div></div>
+      </div>
+    </div>`;
+
+  await _portalLoad();
+}
+
+async function _portalLoad() {
+  try {
+    const [assets, requests, employees] = await Promise.all([
+      api('/assets?limit=200'),
+      api('/requests'),
+      api('/employees'),
+    ]);
+    _portalAssets   = assets.items || assets;
+    _portalRequests = requests;
+
+    // Find employee record matching the logged-in user's email
+    const myEmail = (State.user?.email || '').toLowerCase();
+    const emp = employees.find(e => (e.email || '').toLowerCase() === myEmail);
+    _portalEmployeeId = emp?.id ?? null;
+  } catch (e) {
+    document.getElementById('portal-body').innerHTML =
+      `<p style="color:var(--red)">${esc(e.message)}</p>`;
+    return;
+  }
+  _portalRender();
+}
+
+function portalSwitchTab(tab) {
+  _portalTab = tab;
+  ['overview','my-assets','requests'].forEach(t => {
+    const btn = document.getElementById('ptab-' + t);
+    if (!btn) return;
+    const active = t === tab;
+    btn.style.borderBottomColor  = active ? 'var(--accent)' : 'transparent';
+    btn.style.color              = active ? 'var(--accent)' : 'rgba(255,255,255,.55)';
+    btn.style.fontWeight         = active ? '600' : '400';
+  });
+  _portalRender();
+}
+
+function _portalRender() {
+  const body = document.getElementById('portal-body');
+  if (!body) return;
+  if (_portalTab === 'overview')   body.innerHTML = _portalOverview();
+  if (_portalTab === 'my-assets')  body.innerHTML = _portalMyAssets();
+  if (_portalTab === 'requests')   body.innerHTML = _portalRequests_html();
+  _portalBindSearch();
+}
+
+function _myAssets() {
+  if (_portalEmployeeId === null) return _portalAssets;
+  return _portalAssets.filter(a => a.assigned_to_id === _portalEmployeeId);
+}
+
+function _portalOverview() {
+  const u          = State.user;
+  const s          = State.settings || {};
+  const mine       = _myAssets();
+  const openReqs   = _portalRequests.filter(r => r.status === 'open' || r.status === 'in_progress');
+
+  const statCard = (label, value, ic) => `
+    <div class="stat" style="flex:1;min-width:160px">
+      <div class="label">${icon(ic, 15)}${label}</div>
+      <div class="value">${value}</div>
+    </div>`;
+
+  const assetRows = mine.slice(0, 5).map(a => `
+    <tr>
+      <td><span class="tag">${esc(a.asset_tag)}</span></td>
+      <td>${esc(a.name)}</td>
+      <td><span class="badge ${esc(a.status)}">${esc(a.status)}</span></td>
+      <td class="muted">${esc(a.location_name || '—')}</td>
+    </tr>`).join('') || `<tr><td colspan="4" class="muted" style="padding:16px;text-align:center">No assets assigned to you.</td></tr>`;
+
+  const reqRows = _portalRequests.slice(0, 3).map(r => `
+    <div style="display:flex;align-items:center;justify-content:space-between;
+                padding:10px 0;border-bottom:1px solid var(--border)">
+      <div>
+        <div style="font-weight:500;font-size:14px">${esc(r.title)}</div>
+        <div class="muted" style="font-size:12px">${fmtDate(r.created_at)}</div>
+      </div>
+      <span class="badge ${REQ_STATUS_BADGE[r.status]||''}">${REQ_STATUS_LABELS[r.status]||r.status}</span>
+    </div>`).join('') || `<p class="muted" style="padding:12px 0">No requests submitted yet.</p>`;
+
+  return `
+    <div style="margin-bottom:24px">
+      <h2 style="font-size:22px;margin-bottom:4px">Hi ${esc(u?.name?.split(' ')[0] || 'there')},</h2>
+      <p class="muted">here's ${esc(s.name || 'your company')}'s IT overview.</p>
+    </div>
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:28px">
+      ${statCard('Assets assigned to me', mine.length, 'box')}
+      ${statCard('Open requests', openReqs.length, 'activity')}
+    </div>
+    <div class="panel" style="margin-bottom:20px">
+      <div class="panel-head">
+        <h3>Assets assigned to me</h3>
+        ${mine.length > 5 ? `<button class="btn btn-ghost btn-sm" onclick="portalSwitchTab('my-assets')">View all</button>` : ''}
+      </div>
+      <div class="table-wrap" style="border:none;box-shadow:none">
+        <table>
+          <thead><tr><th>Tag</th><th>Name</th><th>Status</th><th>Location</th></tr></thead>
+          <tbody>${assetRows}</tbody>
+        </table>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
+        <h3>Recent requests</h3>
+        ${_portalRequests.length > 3 ? `<button class="btn btn-ghost btn-sm" onclick="portalSwitchTab('requests')">View all</button>` : ''}
+      </div>
+      <div style="padding:4px 0">${reqRows}</div>
+    </div>`;
+}
+
+function _portalMyAssets() {
+  const mine = _myAssets();
+
+  const rows = mine.map(a => `
+    <tr>
+      <td><span class="tag">${esc(a.asset_tag)}</span></td>
+      <td>${esc(a.name)}</td>
+      <td><span class="badge ${esc(a.status)}">${esc(a.status)}</span></td>
+      <td class="muted">${esc(a.category_name || '—')}</td>
+      <td class="muted">${esc(a.location_name || '—')}</td>
+      <td class="muted">${a.warranty_expiry ? fmtDate(a.warranty_expiry) : '—'}</td>
+    </tr>`).join('') || `<tr><td colspan="6" class="muted" style="padding:32px;text-align:center">No assets assigned to you.</td></tr>`;
+
+  return `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+      <h2 style="font-size:20px">My Assets</h2>
+      <div style="display:flex;gap:10px;align-items:center">
+        <input id="portal-asset-search" type="search" placeholder="Search…"
+          style="padding:7px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);
+                 font-size:13.5px;background:var(--surface);color:var(--text);width:200px"
+          oninput="portalFilterAssets(this.value)">
+        <button class="btn btn-accent btn-sm" onclick="_portalOpenRequestForm()">
+          ${icon('plus', 14)} Request new asset
+        </button>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table id="portal-asset-table">
+        <thead><tr><th>Tag</th><th>Name</th><th>Status</th><th>Category</th><th>Location</th><th>Warranty</th></tr></thead>
+        <tbody id="portal-asset-tbody">${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+function _portalRequests_html() {
+  const addBtn = `<button class="btn btn-accent btn-sm" onclick="_portalOpenRequestForm()">
+    ${icon('plus', 14)} New Request</button>`;
+
+  if (!_portalRequests.length) {
+    return `
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+        <h2 style="font-size:20px">Requests</h2>${addBtn}
+      </div>
+      <div class="table-wrap">
+        <div class="empty">${icon('activity', 44)}<h3>No requests yet</h3>
+          <p>Submit one to get started.</p>
+          <button class="btn btn-accent" onclick="_portalOpenRequestForm()">${icon('plus', 15)} New Request</button>
+        </div>
+      </div>`;
+  }
+
+  const rows = _portalRequests.map(r => `
+    <tr>
+      <td>${esc(r.title)}</td>
+      <td><span class="badge ${r.priority === 'urgent' ? 'retired' : r.priority === 'high' ? 'maintenance' : ''}"
+        style="font-size:11.5px">${esc(r.priority || 'normal')}</span></td>
+      <td><span class="badge ${REQ_STATUS_BADGE[r.status]||''}">${REQ_STATUS_LABELS[r.status]||r.status}</span></td>
+      <td class="muted" style="font-size:12.5px">${fmtDate(r.created_at)}</td>
+      <td class="muted" style="font-size:12.5px;max-width:220px">${esc(r.notes || '—')}</td>
+    </tr>`).join('');
+
+  return `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+      <h2 style="font-size:20px">Requests</h2>${addBtn}
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Title</th><th>Priority</th><th>Status</th><th>Date</th><th>MSP Notes</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+function _portalBindSearch() {
+  // Re-attach search handler after re-render (tab switch clears DOM)
+  const inp = document.getElementById('portal-asset-search');
+  if (inp) inp.oninput = () => portalFilterAssets(inp.value);
+}
+
+function portalFilterAssets(q) {
+  const term = q.toLowerCase();
+  const tbody = document.getElementById('portal-asset-tbody');
+  if (!tbody) return;
+  const mine = _myAssets();
+  const filtered = term
+    ? mine.filter(a =>
+        a.asset_tag.toLowerCase().includes(term) ||
+        a.name.toLowerCase().includes(term) ||
+        (a.location_name || '').toLowerCase().includes(term) ||
+        (a.category_name || '').toLowerCase().includes(term))
+    : mine;
+
+  tbody.innerHTML = filtered.map(a => `
+    <tr>
+      <td><span class="tag">${esc(a.asset_tag)}</span></td>
+      <td>${esc(a.name)}</td>
+      <td><span class="badge ${esc(a.status)}">${esc(a.status)}</span></td>
+      <td class="muted">${esc(a.category_name || '—')}</td>
+      <td class="muted">${esc(a.location_name || '—')}</td>
+      <td class="muted">${a.warranty_expiry ? fmtDate(a.warranty_expiry) : '—'}</td>
+    </tr>`).join('') || `<tr><td colspan="6" class="muted" style="padding:32px;text-align:center">No matching assets.</td></tr>`;
+}
+
+function _portalOpenRequestForm() {
+  _openRequestFormImpl(async () => {
+    const requests = await api('/requests');
+    _portalRequests = requests;
+    _portalRender();
+  });
+}
+
+function _openRequestFormImpl(onSuccess) {
+  openModal(`
+    <div class="modal-head"><h2>New Request</h2>
+      <button class="x-btn" onclick="closeModal()">✕</button></div>
+    <form id="req-form"><div class="modal-body">
+      <div class="field"><label>Title *</label>
+        <input name="title" required placeholder="e.g. New laptop for onboarding"></div>
+      <div class="field"><label>Priority</label>
+        <select name="priority">
+          <option value="low">Low</option>
+          <option value="normal" selected>Normal</option>
+          <option value="high">High</option>
+          <option value="urgent">Urgent</option>
+        </select></div>
+      <div class="field"><label>Description</label>
+        <textarea name="description" rows="3" style="resize:vertical"
+          placeholder="Any additional details…"></textarea></div>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      <button type="submit" class="btn btn-primary">Submit Request</button>
+    </div></form>`);
+
+  document.getElementById('req-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    try {
+      await api('/requests', { method: 'POST', json: {
+        title:       f.get('title'),
+        priority:    f.get('priority'),
+        description: f.get('description') || '',
+      }});
+      closeModal();
+      toast('Request submitted');
+      if (onSuccess) await onSuccess();
+    } catch (err) { toast(err.message, 'err'); }
+  };
 }
 
 function toggleSidebar(open) {
@@ -358,8 +677,13 @@ function renderTenantDashboard(s) {
         <div class="panel-body"><canvas id="statusChart" height="150"></canvas></div></div>
     </div>
     <div class="grid-2">
-      <div class="panel"><div class="panel-head"><h3>Recent Activity</h3></div>
-        <div class="panel-body">${activity}</div></div>
+      <div class="panel">
+        <div class="panel-head">
+          <h3>Recent Activity</h3>
+          <button class="btn btn-ghost btn-sm" onclick="navigate('activity')">View all</button>
+        </div>
+        <div class="panel-body">${activity}</div>
+      </div>
       <div class="panel"><div class="panel-head"><h3>${icon('alert', 16)} Expiring Warranties</h3></div>
         <div class="panel-body">${expiring}</div></div>
     </div>`;

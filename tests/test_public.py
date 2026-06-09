@@ -128,3 +128,111 @@ class TestSwaggerDocs:
         data = r.json()
         assert "paths" in data
         assert "info"  in data
+
+
+class TestSettingsEmailBranding:
+    def test_get_settings_includes_email_branding_fields(self, client, tenant_headers):
+        r = client.get("/api/settings", headers=tenant_headers)
+        assert r.status_code == 200
+        data = r.json()
+        for field in ("email_from_name", "email_from_address",
+                      "email_logo_url", "email_accent_color"):
+            assert field in data, f"Missing field: {field}"
+
+    def test_put_settings_saves_email_branding(self, client, tenant_headers, tenant):
+        payload = {
+            "name":               tenant["name"],
+            "currency":           tenant.get("currency", "CAD"),
+            "logo_url":           "",
+            "accent_color":       "#d4f034",
+            "email_from_name":    "Acme IT",
+            "email_from_address": "it@acme.com",
+            "email_logo_url":     "https://acme.com/logo.png",
+            "email_accent_color": "#ff5500",
+        }
+        r = client.put("/api/settings", json=payload, headers=tenant_headers)
+        assert r.status_code == 200
+
+        r2 = client.get("/api/settings", headers=tenant_headers)
+        assert r2.status_code == 200
+        data = r2.json()
+        assert data["email_from_name"]    == "Acme IT"
+        assert data["email_from_address"] == "it@acme.com"
+        assert data["email_logo_url"]     == "https://acme.com/logo.png"
+        assert data["email_accent_color"] == "#ff5500"
+
+    def test_put_settings_clears_email_branding_with_empty_values(self, client, tenant_headers, tenant):
+        # First set some values
+        client.put("/api/settings", json={
+            "name": tenant["name"], "currency": "CAD",
+            "logo_url": "", "accent_color": "#d4f034",
+            "email_from_name": "Some Brand",
+        }, headers=tenant_headers)
+
+        # Then clear them
+        r = client.put("/api/settings", json={
+            "name": tenant["name"], "currency": "CAD",
+            "logo_url": "", "accent_color": "#d4f034",
+            "email_from_name": None,
+        }, headers=tenant_headers)
+        assert r.status_code == 200
+
+        r2 = client.get("/api/settings", headers=tenant_headers)
+        assert r2.json()["email_from_name"] == ""
+
+
+class TestClientViewerPortal:
+    """client_viewer role gets a valid token and can hit the API endpoints the portal uses."""
+
+    def _create_viewer(self, client, auth, tenant, roles):
+        import time
+        uid = int(time.time() * 1000) % 999999
+        email = f"viewer{uid}@fixture.com"
+        viewer_role = roles.get("client_viewer")
+        assert viewer_role, "client_viewer role not found"
+        r = client.post("/api/users", json={
+            "name":      "Portal Viewer",
+            "email":     email,
+            "password":  "viewerpass123",
+            "role_id":   viewer_role["id"],
+            "tenant_id": tenant["id"],
+        }, headers=auth)
+        assert r.status_code == 200, f"Viewer creation failed: {r.text}"
+        return email
+
+    def test_client_viewer_login_returns_valid_token(self, client, auth, tenant, roles):
+        email = self._create_viewer(client, auth, tenant, roles)
+        r = client.post("/api/auth/login",
+                        data={"username": email, "password": "viewerpass123"},
+                        headers={"host": f"{tenant['slug']}.localhost"})
+        assert r.status_code == 200
+        data = r.json()
+        assert "access_token" in data
+        assert data["access_token"]
+
+    def test_client_viewer_can_access_assets(self, client, auth, tenant, roles):
+        email = self._create_viewer(client, auth, tenant, roles)
+        login = client.post("/api/auth/login",
+                            data={"username": email, "password": "viewerpass123"},
+                            headers={"host": f"{tenant['slug']}.localhost"})
+        token = login.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}",
+                   "host": f"{tenant['slug']}.localhost"}
+
+        r = client.get("/api/assets", headers=headers)
+        assert r.status_code == 200
+        data = r.json()
+        assert "items" in data or isinstance(data, list)
+
+    def test_client_viewer_can_access_requests(self, client, auth, tenant, roles):
+        email = self._create_viewer(client, auth, tenant, roles)
+        login = client.post("/api/auth/login",
+                            data={"username": email, "password": "viewerpass123"},
+                            headers={"host": f"{tenant['slug']}.localhost"})
+        token = login.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}",
+                   "host": f"{tenant['slug']}.localhost"}
+
+        r = client.get("/api/requests", headers=headers)
+        assert r.status_code == 200
+        assert isinstance(r.json(), list)

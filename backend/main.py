@@ -1,6 +1,9 @@
+import logging
 import os, sys
 from contextlib import asynccontextmanager
 from typing import Optional
+
+logging.basicConfig(level=logging.INFO)
 
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
@@ -23,11 +26,20 @@ from routers import password_reset as pw_reset_router
 from routers import stripe_router, signup as signup_router
 from routers import admin_router
 from routers import reports as reports_router
+from routers import licences as licences_router
+from routers import custom_fields as custom_fields_router
+
+
+_log = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    init_db()
+    try:
+        init_db()
+    except Exception:
+        _log.exception("init_db() failed — check database connection and schema")
+        raise
     # Start background scheduler
     from scheduler import start_scheduler
     from backup_service import BACKUP_ENABLED, backup_loop
@@ -92,6 +104,8 @@ app.include_router(signup_router.router,    prefix="/api/auth",       tags=["aut
 app.include_router(stripe_router.router,    prefix="/api/stripe",     tags=["stripe"])
 app.include_router(admin_router.router,     prefix="/api/admin",      tags=["admin"])
 app.include_router(reports_router.router,   prefix="/api/reports",    tags=["reports"])
+app.include_router(licences_router.router,      prefix="/api/licences",      tags=["licences"])
+app.include_router(custom_fields_router.router, prefix="/api/custom-fields", tags=["custom-fields"])
 
 
 # ── Public: tenant branding (for white-label login page) ─────────────────────
@@ -152,7 +166,11 @@ def get_settings(db: Session = Depends(get_db),
     t = db.query(Tenant).get(tenant_id)
     if not t: raise HTTPException(404, "Tenant not found")
     return {"name": t.name, "currency": t.currency,
-            "logo_url": t.logo_url, "accent_color": t.accent_color, "mode": "tenant"}
+            "logo_url": t.logo_url, "accent_color": t.accent_color, "mode": "tenant",
+            "email_from_name": t.email_from_name or "",
+            "email_from_address": t.email_from_address or "",
+            "email_logo_url": t.email_logo_url or "",
+            "email_accent_color": t.email_accent_color or ""}
 
 
 @app.put("/api/settings")
@@ -165,6 +183,10 @@ def update_settings(body: SettingsIn, db: Session = Depends(get_db),
     if not t: raise HTTPException(404, "Tenant not found")
     t.name = body.name; t.currency = body.currency
     t.logo_url = body.logo_url; t.accent_color = body.accent_color
+    t.email_from_name = body.email_from_name or None
+    t.email_from_address = body.email_from_address or None
+    t.email_logo_url = body.email_logo_url or None
+    t.email_accent_color = body.email_accent_color or None
     db.commit()
     return {"ok": True}
 

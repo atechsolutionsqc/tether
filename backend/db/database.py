@@ -115,11 +115,69 @@ DEFAULT_ROLES = {
 }
 
 
+def _run_migrations(conn):
+    """
+    Lightweight schema migrations for installs that pre-date a model change.
+    Uses ADD COLUMN IF NOT EXISTS (MariaDB 10.3+ / SQLite via try/except).
+    Each entry is idempotent — safe to run on every startup.
+    """
+    import logging
+    from sqlalchemy import text
+    log = logging.getLogger(__name__)
+
+    migrations = [
+        # 0.0.8 — email branding columns on tenants
+        ("tenants", "email_from_name",    "VARCHAR(120)"),
+        ("tenants", "email_from_address", "VARCHAR(320)"),
+        ("tenants", "email_logo_url",     "VARCHAR(500)"),
+        ("tenants", "email_accent_color", "VARCHAR(20)"),
+        # 0.0.8 — depreciation columns on assets
+        ("assets",  "useful_life_years",  "INT"),
+        ("assets",  "salvage_value",      "DOUBLE"),
+    ]
+
+    for table, column, col_type in migrations:
+        try:
+            if _is_sqlite:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"))
+            else:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {col_type}"))
+        except Exception as exc:
+            # SQLite raises OperationalError "duplicate column name" — that's fine
+            msg = str(exc).lower()
+            if "duplicate column" in msg or "already exists" in msg:
+                pass  # column already present
+            else:
+                log.warning("Migration ALTER TABLE %s ADD COLUMN %s: %s", table, column, exc)
+
+
 def init_db():
+    import logging, time
+    log = logging.getLogger(__name__)
+
     from models import models  # noqa: F401
     # Ensure all model tables including password reset tokens are registered
     from routers.password_reset import PasswordResetToken  # noqa: F401
-    Base.metadata.create_all(bind=engine)
+
+    # Retry loop — gives MariaDB time to finish initialising on first-run
+    for attempt in range(1, 11):
+        try:
+            Base.metadata.create_all(bind=engine)
+            break
+        except Exception as exc:
+            if attempt == 10:
+                log.error("Database unavailable after 10 attempts: %s", exc)
+                raise
+            log.warning("Database not ready (attempt %d/10): %s — retrying in 3 s", attempt, exc)
+            time.sleep(3)
+
+    with engine.connect() as conn:
+        _run_migrations(conn)
+        conn.commit()
+
+    # Discard pooled connections so _seed sees the updated schema
+    engine.dispose()
+
     _seed(SessionLocal())
 
 

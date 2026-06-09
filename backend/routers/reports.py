@@ -182,6 +182,118 @@ def value_report(
     return result
 
 
+@router.get("/depreciation")
+def depreciation_report(
+    fully_depreciated: Optional[bool] = Query(None),
+    db: Session = Depends(get_db),
+    cu: CurrentUser = Depends(get_current_user),
+    tenant_id: Optional[int] = Depends(get_tenant_id),
+):
+    cu.require("reports.view")
+    from routers.assets import calculate_depreciation
+
+    assets = (
+        _asset_query(db, tenant_id)
+        .filter(
+            Asset.purchase_cost.isnot(None),
+            Asset.purchase_date.isnot(None),
+            Asset.useful_life_years.isnot(None),
+        )
+        .all()
+    )
+
+    items = []
+    for a in assets:
+        dep = calculate_depreciation(a)
+        if dep is None:
+            continue
+        if fully_depreciated is not None and dep["fully_depreciated"] != fully_depreciated:
+            continue
+        items.append({
+            "asset_id":           a.id,
+            "asset_tag":          a.asset_tag,
+            "name":               a.name,
+            "category_name":      a.category.name if a.category else None,
+            "location_name":      a.location.name if a.location else None,
+            "purchase_cost":      dep["purchase_cost"],
+            "current_value":      dep["current_value"],
+            "total_depreciation": dep["total_depreciation"],
+            "depreciation_pct":   dep["depreciation_pct"],
+            "end_of_life_date":   dep["end_of_life_date"],
+            "fully_depreciated":  dep["fully_depreciated"],
+            "annual_depreciation": dep["annual_depreciation"],
+            "useful_life_years":  dep["useful_life_years"],
+        })
+
+    items.sort(key=lambda x: x["depreciation_pct"], reverse=True)
+
+    total_purchase  = round(sum(i["purchase_cost"]  for i in items), 2)
+    total_current   = round(sum(i["current_value"]   for i in items), 2)
+    total_depr      = round(sum(i["total_depreciation"] for i in items), 2)
+    fully_depr_count = sum(1 for i in items if i["fully_depreciated"])
+
+    return {
+        "items": items,
+        "summary": {
+            "total_purchase_value":    total_purchase,
+            "total_current_value":     total_current,
+            "total_depreciated":       total_depr,
+            "fully_depreciated_count": fully_depr_count,
+            "tracked_asset_count":     len(items),
+        },
+    }
+
+
+@router.get("/depreciation/export")
+def depreciation_export(
+    db: Session = Depends(get_db),
+    cu: CurrentUser = Depends(get_current_user),
+    tenant_id: Optional[int] = Depends(get_tenant_id),
+):
+    cu.require("reports.view")
+    from routers.assets import calculate_depreciation
+
+    assets = (
+        _asset_query(db, tenant_id)
+        .filter(
+            Asset.purchase_cost.isnot(None),
+            Asset.purchase_date.isnot(None),
+            Asset.useful_life_years.isnot(None),
+        )
+        .all()
+    )
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "asset_tag", "name", "category", "location",
+        "purchase_cost", "salvage_value", "useful_life_years",
+        "annual_depreciation", "current_value", "total_depreciation",
+        "depreciation_pct", "end_of_life_date", "fully_depreciated",
+    ])
+    for a in assets:
+        dep = calculate_depreciation(a)
+        if dep is None:
+            continue
+        writer.writerow([
+            a.asset_tag, a.name,
+            a.category.name if a.category else "",
+            a.location.name if a.location else "",
+            dep["purchase_cost"], dep["salvage_value"], dep["useful_life_years"],
+            dep["annual_depreciation"], dep["current_value"],
+            dep["total_depreciation"], dep["depreciation_pct"],
+            dep["end_of_life_date"], dep["fully_depreciated"],
+        ])
+
+    output.seek(0)
+    fname = f"tether-depreciation-{date.today().isoformat()}.csv"
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={fname}"},
+    )
+
+
 @router.get("/export")
 def export_report(
     report_type: str = Query("assets", regex="^(warranty|assets|value)$"),

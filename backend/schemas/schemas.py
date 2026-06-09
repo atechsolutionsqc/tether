@@ -15,11 +15,15 @@ class PasswordChange(BaseModel):
 
 # ── Tenant ────────────────────────────────────────────────────────────────────
 class TenantIn(BaseModel):
-    name: str         = Field(..., min_length=1, max_length=120)
-    slug: str         = Field(..., min_length=1, max_length=60)
-    logo_url: str     = Field("", max_length=500)
-    accent_color: str = Field("#d4f034", max_length=20)
-    currency: str     = Field("USD", max_length=10)
+    name: str                        = Field(..., min_length=1, max_length=120)
+    slug: str                        = Field(..., min_length=1, max_length=60)
+    logo_url: str                    = Field("", max_length=500)
+    accent_color: str                = Field("#d4f034", max_length=20)
+    currency: str                    = Field("USD", max_length=10)
+    email_from_name: Optional[str]   = Field(None, max_length=120)
+    email_from_address: Optional[str]= Field(None, max_length=320)
+    email_logo_url: Optional[str]    = Field(None, max_length=500)
+    email_accent_color: Optional[str]= Field(None, max_length=20)
 
 class TenantOut(TenantIn):
     id: int
@@ -117,12 +121,14 @@ class AssetIn(BaseModel):
     manufacturer:    str            = Field("", max_length=100)
     status:          str            = Field("available", max_length=40)
     notes:           str            = Field("", max_length=2000)
-    purchase_date:   Optional[date] = None
-    purchase_cost:   Optional[float] = None
-    warranty_expiry: Optional[date] = None
-    category_id:     Optional[int]  = None
-    location_id:     Optional[int]  = None
-    assigned_to_id:  Optional[int]  = None
+    purchase_date:    Optional[date]  = None
+    purchase_cost:    Optional[float] = None
+    warranty_expiry:  Optional[date]  = None
+    useful_life_years: Optional[int]  = None
+    salvage_value:    Optional[float] = None
+    category_id:      Optional[int]   = None
+    location_id:      Optional[int]   = None
+    assigned_to_id:   Optional[int]   = None
 
 class AssetOut(AssetIn):
     id: int
@@ -151,7 +157,11 @@ class HistoryOut(BaseModel):
 
 # ── Settings ──────────────────────────────────────────────────────────────────
 class SettingsIn(BaseModel):
-    name:         str = Field(..., min_length=1, max_length=120)
-    currency:     str = Field(..., max_length=10)
-    logo_url:     str = Field("", max_length=500)
-    accent_color: str = Field("#d4f034", max_length=20)
+    name:               str            = Field(..., min_length=1, max_length=120)
+    currency:           str            = Field(..., max_length=10)
+    logo_url:           str            = Field("", max_length=500)
+    accent_color:       str            = Field("#d4f034", max_length=20)
+    email_from_name:    Optional[str]  = Field(None, max_length=120)
+    email_from_address: Optional[str]  = Field(None, max_length=320)
+    email_logo_url:     Optional[str]  = Field(None, max_length=500)
+    email_accent_color: Optional[str]  = Field(None, max_length=20)

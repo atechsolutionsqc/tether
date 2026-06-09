@@ -79,6 +79,7 @@ def create_invite(body: InviteCreate, db: Session = Depends(get_db),
             invite_url=invite_url,
             tenant_name=tenant.name,
             role=role.name,
+            tenant=tenant,
         )
     except Exception as _e:
         import logging

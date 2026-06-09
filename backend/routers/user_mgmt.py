@@ -81,8 +81,11 @@ def create_user(body: UserIn, request: Request,
     try:
         import os
         from email_service import send_welcome
+        from models.models import Tenant as _Tenant
+        _tenant = db.query(_Tenant).get(u.tenant_id) if u.tenant_id else None
         send_welcome(u.email, u.name or u.email,
-                     os.environ.get("APP_URL", "https://usetether.ca"), role.name)
+                     os.environ.get("APP_URL", "https://usetether.ca"), role.name,
+                     tenant=_tenant)
     except Exception as _e:
         import logging
         logging.getLogger(__name__).warning(f"Welcome email failed: {_e}")

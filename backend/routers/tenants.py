@@ -48,7 +48,11 @@ def create_tenant(body: TenantIn, request: Request,
     if db.query(Tenant).filter(Tenant.slug == slug).first():
         raise HTTPException(400, "Slug already in use")
     t = Tenant(name=body.name, slug=slug, logo_url=body.logo_url,
-               accent_color=body.accent_color, currency=body.currency)
+               accent_color=body.accent_color, currency=body.currency,
+               email_from_name=body.email_from_name,
+               email_from_address=body.email_from_address,
+               email_logo_url=body.email_logo_url,
+               email_accent_color=body.email_accent_color)
     db.add(t)
     db.flush()
     # seed default categories + locations for new tenant
@@ -91,6 +95,10 @@ def update_tenant(tid: int, body: TenantIn, request: Request,
         raise HTTPException(400, "Slug already in use")
     t.name = body.name; t.slug = slug; t.logo_url = body.logo_url
     t.accent_color = body.accent_color; t.currency = body.currency
+    t.email_from_name = body.email_from_name
+    t.email_from_address = body.email_from_address
+    t.email_logo_url = body.email_logo_url
+    t.email_accent_color = body.email_accent_color
     db.commit()
     db.refresh(t)
     audit.log(db, "tenant.update", actor_id=cu.id, actor_email=cu.email,

@@ -8,18 +8,26 @@ A modern, self-hostable IT asset management tool. Run it as a **single company**
 
 - **Asset tracking** — tag, name, serial, model, manufacturer, status, purchase cost, warranty expiry
 - **Check-out / check-in** — assign assets to people with a full audit trail
-- **Asset requests** — employees can submit requests; admins approve or deny
-- **Dashboard** — total assets, value, status breakdown charts, expiring warranties
+- **Asset requests** — employees can submit requests; admins approve or deny; email notifications on create and status change
+- **Dashboard** — total assets, value, status breakdown charts, expiring warranties, recent activity
 - **QR labels** — per-asset QR codes downloadable as PNG
-- **CSV import/export** — bulk-load assets; categories, locations, and people are created automatically
+- **CSV import/export** — bulk-load assets; categories, locations, and people are created automatically; custom fields included dynamically
 - **Search & filter** — by keyword, status, category, location; sortable columns
+- **Bulk operations** — bulk status update, bulk location change, bulk delete
+- **Custom fields** — per-tenant key/value fields for assets (IMEI, VLAN, licence key, department code, etc.); text, number, date, boolean, and URL types; included in CSV export/import
+- **Software licences** — track licence records, seat counts, expiry dates, and per-employee/asset assignments
+- **Depreciation tracking** — straight-line depreciation with book value, end-of-life date, and fully-depreciated flag; depreciation report with CSV export
+- **Activity feed** — unified timeline of all asset events (create, update, delete, checkout, checkin) with filtering and pagination
+- **Reports** — assets by status, total value by category, warranty expiry, depreciation; all exportable to CSV
+- **Audit log** — every significant action recorded with actor, tenant, resource, and IP; viewable by MSP admins
 - **Standalone mode** — single-company deployment with no MSP layer; one login, one dashboard
 - **Multi-tenant (MSP)** — manage multiple client organisations from one instance; each tenant gets its own subdomain
+- **Client portal** — simplified three-tab view (Overview, My Assets, Requests) for read-only client users
 - **Preview as client** — MSP admins can open any client's view in a new tab with one click
 - **User management** — role-based permissions, per-user overrides, invite-based onboarding
 - **Password reset** — self-service via email token
 - **Billing** — Stripe-backed subscription management
-- **Email notifications** — supports SMTP, Resend, and SendGrid
+- **Email notifications** — supports SMTP, Resend, and SendGrid; white-label branding per tenant
 - **Warranty alerts** — scheduled alerts for assets expiring within a configurable window
 - **Automated backups** — scheduled S3-compatible backup of the database
 - **Rate limiting** — in-memory or Redis-backed rate limits on auth endpoints
@@ -339,6 +347,7 @@ IT-0002,Dell Monitor,Dell,U2724DE,,Monitor,Remote,available,,,620,,
 - **status** must be one of: `available`, `deployed`, `maintenance`, `retired` (defaults to `available`)
 - **purchase_date** and **warranty_expiry** accept `YYYY-MM-DD`, `MM/DD/YYYY`, or `DD/MM/YYYY`
 - Rows with an existing `asset_tag` are **updated**, not duplicated
+- **Custom field columns** — any column header that isn't a standard field is treated as a custom field label; the field definition is created automatically if it doesn't exist yet, and values are upserted per asset
 
 ---
 
@@ -360,6 +369,7 @@ tether/
 ├── backend/
 │   ├── main.py               # FastAPI app, router registration
 │   ├── security.py           # JWT auth, bcrypt, permissions
+│   ├── audit.py              # Audit log helper (used by all routers)
 │   ├── email_service.py      # SMTP / Resend / SendGrid abstraction
 │   ├── billing.py            # Billing helpers
 │   ├── backup_service.py     # Scheduled S3 backup
@@ -372,18 +382,21 @@ tether/
 │       ├── auth.py           # Login, /me, change-password
 │       ├── signup.py         # Public sign-up
 │       ├── password_reset.py # Self-service password reset
-│       ├── assets.py         # CRUD, checkout/checkin, QR, CSV
+│       ├── assets.py         # CRUD, checkout/checkin, QR, CSV, activity feed
 │       ├── categories.py     # Asset categories
 │       ├── locations.py      # Asset locations
 │       ├── users.py          # People / employees
-│       ├── requests.py       # Asset requests
+│       ├── requests.py       # Asset requests + email notifications
+│       ├── licences.py       # Software licences + seat assignments
+│       ├── custom_fields.py  # Per-tenant custom field defs and values
+│       ├── reports.py        # Reports: status, value, warranty, depreciation
 │       ├── dashboard.py      # Stats endpoint
 │       ├── tenants.py        # Tenant management (MSP)
 │       ├── user_mgmt.py      # User CRUD, roles, permissions
 │       ├── invites.py        # Invite-based onboarding
 │       ├── billing_router.py # Billing endpoints
 │       ├── stripe_router.py  # Stripe webhooks
-│       ├── admin_router.py   # Admin panel + preview-token endpoint
+│       ├── admin_router.py   # Admin panel + preview-token + audit log
 │       └── demo.py           # Demo mode (DEPLOYMENT_MODE=demo only)
 ├── frontend/
 │   ├── templates/index.html  # SPA shell
@@ -391,28 +404,34 @@ tether/
 │       ├── css/style.css
 │       └── js/
 │           ├── app.js        # API layer, auth, router, helpers
-│           ├── views.js      # Login, shell, dashboard, MSP views
-│           ├── views2.js     # Assets, categories, locations, people, settings
+│           ├── views.js      # Login, shell, dashboard, MSP views, client portal
+│           ├── views2.js     # Assets, licences, reports, activity, settings
 │           ├── icons.js      # Inline SVG icon set
 │           └── chart.umd.js  # Chart.js (vendored, no CDN required)
 ├── tests/
-│   ├── conftest.py           # Shared fixtures (client, auth, tenant)
-│   ├── test_admin.py         # Admin endpoints + preview-token
-│   ├── test_assets.py
+│   ├── conftest.py              # Shared fixtures (client, auth, tenant, employee)
+│   ├── test_admin.py            # Admin endpoints + preview-token + audit log
+│   ├── test_assets.py           # Asset CRUD, checkout/checkin, activity feed
+│   ├── test_audit.py            # Audit log entries
 │   ├── test_auth.py
 │   ├── test_billing.py
 │   ├── test_categories.py
+│   ├── test_custom_fields.py    # Custom field defs, values, CSV, isolation
 │   ├── test_dashboard.py
+│   ├── test_depreciation.py     # calculate_depreciation unit + API + report
 │   ├── test_employees.py
+│   ├── test_licences.py         # Software licences + seat assignments
 │   ├── test_locations.py
 │   ├── test_password_reset.py
-│   ├── test_public.py        # Public endpoints + standalone branding
-│   ├── test_requests.py
+│   ├── test_public.py           # Public endpoints + client portal + standalone
+│   ├── test_reports.py          # Reports endpoints
+│   ├── test_requests.py         # Asset requests + email notifications
 │   ├── test_signup.py
-│   ├── test_standalone.py    # Standalone mode seeding + login
+│   ├── test_standalone.py       # Standalone mode seeding + login
 │   ├── test_stripe.py
 │   ├── test_tenants.py
 │   └── test_users.py
+├── CHANGELOG.md
 ├── Dockerfile
 ├── docker-compose.yml
 ├── install.sh
