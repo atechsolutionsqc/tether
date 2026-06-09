@@ -173,7 +173,10 @@ def get_tenant_id(request: Request, db: Session = Depends(get_db),
             t = (db.query(Tenant).filter(Tenant.slug == slug).first() or
                  db.query(TenantDomain).filter(TenantDomain.domain == slug,
                                                TenantDomain.verified == True).first())
-            return t.tenant_id if hasattr(t, "tenant_id") else (t.id if t else None)
+            if t is None:
+                # Unknown subdomain — return an impossible id so queries return empty
+                return -1
+            return t.tenant_id if hasattr(t, "tenant_id") else t.id
     else:
         # client user always scoped to their own tenant
         return current_user.tenant_id

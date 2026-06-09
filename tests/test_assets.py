@@ -627,10 +627,12 @@ class TestActivityFeed:
     def test_cross_tenant_isolation(self, client, auth, tenant_headers, fresh_employee):
         """Activity from tenant A is not visible to tenant B."""
         other_slug = f"act-iso-{_tag()}"
-        client.post("/api/tenants", json={
+        r_t = client.post("/api/tenants", json={
             "name": "Activity Iso Corp", "slug": other_slug,
         }, headers=auth)
-        other_h = {**auth, "host": f"{other_slug}.localhost"}
+        assert r_t.status_code == 200, f"Tenant creation failed: {r_t.text}"
+        created_slug = r_t.json().get("slug", other_slug)
+        other_h = {**auth, "host": f"{created_slug}.localhost"}
 
         # Create checkout in the fixture tenant
         asset = self._make_asset(client, tenant_headers)
