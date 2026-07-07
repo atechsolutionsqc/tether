@@ -63,7 +63,8 @@ class TestResetToken:
         assert r.status_code == 200
         data = r.json()
         assert data["valid"] is True
-        assert data["email"] == "admin@usetether.ca"
+        assert "email" not in data
+        assert "name" not in data
 
     def test_successful_reset(self, client):
         raw = self._get_raw_token()

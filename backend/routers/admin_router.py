@@ -28,6 +28,14 @@ from security import get_current_user, CurrentUser
 router = APIRouter()
 
 
+def _app_version() -> str:
+    try:
+        from main import app as _app
+        return _app.version
+    except Exception:
+        return "unknown"
+
+
 @router.get("/status")
 def system_status(
     db: Session = Depends(get_db),
@@ -36,7 +44,8 @@ def system_status(
     cu.require("msp.dashboard")
 
     from backup_service import BACKUP_ENABLED, _s3_configured, S3_BUCKET, S3_ENDPOINT
-    from scheduler import WARRANTY_ALERT_ENABLED, WARRANTY_ALERT_DAYS
+    from scheduler import (WARRANTY_ALERT_ENABLED, WARRANTY_ALERT_DAYS,
+                           LICENCE_ALERT_ENABLED, LICENCE_ALERT_DAYS)
     from billing import is_saas
 
     total_assets  = db.query(Asset).count()
@@ -53,7 +62,7 @@ def system_status(
         backup_dest = f"{endpoint} → {S3_BUCKET}"
 
     return {
-        "version":          "1.0.0",
+        "version":          _app_version(),
         "deployment_mode":  os.environ.get("DEPLOYMENT_MODE", "selfhosted"),
         "saas_mode":        is_saas(),
         "timestamp":        datetime.utcnow().isoformat() + "Z",
@@ -74,8 +83,10 @@ def system_status(
             "backup_enabled":     BACKUP_ENABLED,
             "backup_configured":  BACKUP_ENABLED and _s3_configured(),
             "backup_destination": backup_dest,
-            "warranty_alerts":    WARRANTY_ALERT_ENABLED,
+            "warranty_alerts":      WARRANTY_ALERT_ENABLED,
             "warranty_window_days": WARRANTY_ALERT_DAYS,
+            "licence_alerts":       LICENCE_ALERT_ENABLED,
+            "licence_window_days":  LICENCE_ALERT_DAYS,
         },
     }
 
@@ -170,6 +181,31 @@ def trigger_warranty_alerts(
         raise HTTPException(500, f"Alert job failed: {str(exc)}")
 
 
+@router.post("/alerts/licence")
+def trigger_licence_alerts(
+    cu: CurrentUser = Depends(get_current_user),
+):
+    """Manually trigger licence expiry emails right now."""
+    cu.require("tenants.manage")
+
+    from scheduler import run_licence_alerts_now, LICENCE_ALERT_ENABLED
+
+    if not LICENCE_ALERT_ENABLED:
+        raise HTTPException(400,
+            "Licence alerts are disabled. Set LICENCE_ALERTS_ENABLED=true in .env")
+
+    email_provider = os.environ.get("EMAIL_PROVIDER", "none")
+    if email_provider == "none":
+        raise HTTPException(400,
+            "Email is not configured. Set EMAIL_PROVIDER in .env to send alerts")
+
+    try:
+        result = run_licence_alerts_now()
+        return result
+    except Exception as exc:
+        raise HTTPException(500, f"Alert job failed: {str(exc)}")
+
+
 @router.post("/tenants/{tid}/preview-token")
 def tenant_preview_token(
     tid: int,
@@ -194,7 +230,10 @@ def tenant_preview_token(
     user = db.query(User).filter(User.email == preview_email, User.tenant_id == tid).first()
 
     if not user:
-        role = db.query(Role).filter(Role.is_msp_role == False).first()  # noqa: E712
+        role = (
+            db.query(Role).filter(Role.name == "client_admin").first()
+            or db.query(Role).filter(Role.is_msp_role == False).first()  # noqa: E712
+        )
         if not role:
             raise HTTPException(400, "No client roles configured")
         user = User(

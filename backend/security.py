@@ -67,11 +67,32 @@ def create_token(user_id: int, tenant_id: Optional[int], is_msp_staff: bool,
     expire = datetime.utcnow() + timedelta(hours=TOKEN_EXPIRE_HOURS)
     return jwt.encode({
         "sub": str(user_id),
-        "tid": tenant_id,          # None for MSP staff
+        "tid": tenant_id,
         "msp": is_msp_staff,
-        "pfp": _pw_fingerprint(password_hash),  # invalidated on password change
+        "pfp": _pw_fingerprint(password_hash),
         "exp": expire,
     }, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def create_totp_challenge_token(user_id: int) -> str:
+    """Short-lived token issued when TOTP is required. Not a full session — only redeemable at /auth/totp/authenticate."""
+    expire = datetime.utcnow() + timedelta(minutes=5)
+    return jwt.encode({
+        "sub":  str(user_id),
+        "totp": True,   # marks this as a challenge token, not a session
+        "exp":  expire,
+    }, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def decode_totp_challenge_token(token: str) -> int:
+    """Returns user_id or raises 401."""
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid or expired TOTP challenge")
+    if not payload.get("totp"):
+        raise HTTPException(status_code=401, detail="Invalid TOTP challenge token")
+    return int(payload["sub"])
 
 
 def decode_token(token: str) -> dict:

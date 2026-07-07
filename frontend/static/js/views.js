@@ -55,6 +55,58 @@ function renderLogin() {
   };
 }
 
+// ============ TOTP CHALLENGE PAGE ============
+function renderTotpChallenge(totpToken) {
+  document.getElementById('app').innerHTML = `
+    <div class="login-wrap">
+      <div class="login-card">
+        <div class="login-logo"><div class="mark"><span></span></div><b>Tether</b></div>
+        <h1>Two-factor authentication</h1>
+        <p class="sub">Enter the 6-digit code from your authenticator app.</p>
+        <form id="totp-challenge-form">
+          <div class="field"><label>Authenticator code</label>
+            <input name="code" type="text" inputmode="numeric" pattern="[0-9]*"
+              autocomplete="one-time-code" maxlength="8" placeholder="000000" required
+              style="letter-spacing:4px;font-size:22px;text-align:center"></div>
+          <button class="btn btn-primary" style="width:100%;justify-content:center;padding:11px" type="submit">
+            Verify
+          </button>
+          <div style="text-align:center;margin-top:12px">
+            <a href="#" style="font-size:13px;color:var(--text-muted)" onclick="renderLogin();return false">Back to login</a>
+          </div>
+        </form>
+      </div>
+    </div>`;
+
+  document.getElementById('totp-challenge-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const btn = e.target.querySelector('button');
+    btn.disabled = true; btn.textContent = 'Verifying…';
+    const code = new FormData(e.target).get('code').replace(/\s/g, '');
+    try {
+      const res = await fetch('/api/auth/totp/authenticate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ totp_token: totpToken, code }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Invalid code');
+      }
+      const data = await res.json();
+      State.token = data.access_token;
+      localStorage.setItem('tt_token', State.token);
+      await boot();
+    } catch (err) {
+      toast(err.message, 'err');
+      btn.disabled = false; btn.textContent = 'Verify';
+    }
+  };
+
+  // Auto-focus the code input
+  document.querySelector('#totp-challenge-form input[name=code]')?.focus();
+}
+
 // ============ INVITE ACCEPT PAGE ============
 async function renderInviteAccept(token) {
   const app = document.getElementById('app');
@@ -196,6 +248,8 @@ function renderApp() {
               <small>${esc(u?.role || '')}</small>
             </div>
           </div>
+          <button class="theme-toggle" onclick="toggleDarkMode()" title="Toggle dark mode">${icon('moon', 15)} Dark mode</button>
+          <button class="theme-toggle" onclick="_showShortcutHelp()" title="Keyboard shortcuts">${icon('command', 15)} Shortcuts</button>
           <button class="logout-btn" onclick="logout()">${icon('logout', 16)}Sign out</button>
         </div>
       </aside>
@@ -231,6 +285,7 @@ function renderApp() {
     'reports-warranty':  pageReportWarranty,
     'reports-value':     pageReportValue,
     'reports-depreciation': pageReportDepreciation,
+    'reports-age':       pageReportsAge,
     licences:   pageLicences,
     activity:   pageActivity,
   };
@@ -289,13 +344,14 @@ async function renderClientPortal() {
 
 async function _portalLoad() {
   try {
-    const [assets, requests, employees] = await Promise.all([
+    const [assets, requests, empsResp] = await Promise.all([
       api('/assets?limit=200'),
       api('/requests'),
       api('/employees'),
     ]);
     _portalAssets   = assets.items || assets;
     _portalRequests = requests;
+    const employees = empsResp.items ?? empsResp;
 
     // Find employee record matching the logged-in user's email
     const myEmail = (State.user?.email || '').toLowerCase();
@@ -603,17 +659,30 @@ function renderMspDashboard(s) {
     </div>`;
 
   const rows = s.clients.map(c => `
-    <tr>
-      <td><b class="client-link" onclick="jumpToClient('${esc(c.slug)}')">${esc(c.name)}</b>
-          <span class="tag muted" style="font-size:11px">${esc(c.slug)}</span></td>
+    <tr id="client-row-${c.id}" class="client-summary-row" style="cursor:pointer" onclick="_toggleClientDrilldown(${c.id}, '${esc(c.slug)}', '${esc(c.name)}', this)">
+      <td>
+        <span style="display:inline-flex;align-items:center;gap:6px">
+          <span id="drill-chevron-${c.id}" style="font-size:11px;color:var(--text-muted);transition:transform .15s">▶</span>
+          <b>${esc(c.name)}</b>
+          <span class="tag muted" style="font-size:11px">${esc(c.slug)}</span>
+        </span>
+      </td>
       <td>${c.total_assets}</td>
       <td>${c.deployed}</td>
       <td>$${c.total_value.toLocaleString()}</td>
       <td>${c.expiring_warranties > 0
         ? `<span style="color:var(--amber);font-weight:600">${c.expiring_warranties} expiring</span>`
         : '<span class="muted">—</span>'}</td>
-      <td><button class="btn btn-ghost btn-sm" onclick="jumpToClient('${esc(c.slug)}')">
-        ${icon('arrowOut', 14)} Open</button></td>
+      <td onclick="event.stopPropagation()">
+        <button class="btn btn-ghost btn-sm" onclick="previewAsClient(${c.id},'${esc(c.slug)}')" title="Open in new tab as client">
+          ${icon('arrowOut', 14)} Preview</button>
+      </td>
+    </tr>
+    <tr id="drill-row-${c.id}" style="display:none">
+      <td colspan="6" style="padding:0">
+        <div id="drill-body-${c.id}" style="padding:14px 18px;background:var(--bg);border-top:1px solid var(--border)">
+        </div>
+      </td>
     </tr>`).join('');
 
   page.innerHTML = pageHeader('MSP Dashboard', 'All Clients') + banner + `
@@ -635,6 +704,80 @@ function renderMspDashboard(s) {
         </table>
       </div>
     </div>`;
+}
+
+const _drilldownOpen = new Set();
+
+async function _toggleClientDrilldown(tid, slug, name) {
+  const row   = document.getElementById(`drill-row-${tid}`);
+  const body  = document.getElementById(`drill-body-${tid}`);
+  const chev  = document.getElementById(`drill-chevron-${tid}`);
+  if (!row || !body) return;
+
+  if (_drilldownOpen.has(tid)) {
+    // Collapse
+    row.style.display = 'none';
+    chev.style.transform = '';
+    _drilldownOpen.delete(tid);
+    return;
+  }
+
+  // Expand
+  row.style.display = '';
+  chev.style.transform = 'rotate(90deg)';
+  _drilldownOpen.add(tid);
+  body.innerHTML = `<div style="color:var(--text-muted);font-size:13px">Loading…</div>`;
+
+  try {
+    const d = await api(`/dashboard/client/${tid}`);
+    const fmt = v => `$${Number(v || 0).toLocaleString()}`;
+    const expRows = (d.expiring_warranties || []).map(w =>
+      `<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:13px;border-bottom:1px solid var(--border)">
+         <span><b>${esc(w.asset_tag)}</b> ${esc(w.name)}</span>
+         <span style="color:var(--amber)">${w.warranty_expiry}</span>
+       </div>`
+    ).join('') || `<div style="font-size:13px;color:var(--text-muted);padding:4px 0">None expiring</div>`;
+
+    const recentRows = (d.recent_activity || []).map(a =>
+      `<div style="font-size:13px;padding:3px 0;color:var(--text-muted)">
+         <b style="color:var(--text)">${esc(a.asset_tag)}</b> ${a.action === 'checkout' ? 'checked out' : 'checked in'}
+         ${a.employee_name ? `to <b>${esc(a.employee_name)}</b>` : ''}
+       </div>`
+    ).join('') || `<div style="font-size:13px;color:var(--text-muted)">No recent activity</div>`;
+
+    body.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <b style="font-size:15px">${esc(name)}</b>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-ghost btn-sm" onclick="previewAsClient(${tid},'${esc(slug)}')">${icon('arrowOut',13)} Open as client</button>
+          <button class="btn btn-ghost btn-sm" onclick="jumpToClient('${esc(slug)}')">${icon('layers',13)} Switch to tenant</button>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px">
+        ${[
+          ['Total', d.total_assets, 'box'],
+          ['Deployed', d.deployed, 'arrowOut'],
+          ['Available', d.available, 'check'],
+          ['Value', fmt(d.total_value), 'dollar'],
+        ].map(([label, val, ic]) => `
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 12px">
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">${label}</div>
+            <div style="font-size:20px;font-weight:700">${val}</div>
+          </div>`).join('')}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+        <div>
+          <div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:6px">Expiring Warranties</div>
+          ${expRows}
+        </div>
+        <div>
+          <div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:6px">Recent Activity</div>
+          ${recentRows}
+        </div>
+      </div>`;
+  } catch(e) {
+    body.innerHTML = `<span style="color:var(--red);font-size:13px">${esc(e.message)}</span>`;
+  }
 }
 
 function renderTenantDashboard(s) {
@@ -663,12 +806,25 @@ function renderTenantDashboard(s) {
         </li>`).join('')}</ul>`
     : `<p class="muted" style="padding:8px 0">No activity yet.</p>`;
 
+  const overdueCount = s.overdue_maintenance || 0;
+  const upcomingMaint = (s.upcoming_maintenance || []).length
+    ? `<ul class="timeline">${(s.upcoming_maintenance || []).map(m => `
+        <li>
+          <div class="t-action"><b>${esc(m.title)}</b>
+            ${m.maintenance_type ? `<span class="tag muted">${esc(m.maintenance_type)}</span>` : ''}
+            <a style="cursor:pointer;color:var(--accent)" onclick="navigate('asset',${m.asset_id})">${esc(m.asset_tag)}</a>
+          </div>
+          <div class="t-time">${fmtDate(m.due_date)}</div>
+        </li>`).join('')}</ul>`
+    : `<p class="muted" style="padding:8px 0">No maintenance due in the next 30 days.</p>`;
+
   page.innerHTML = pageHeader('Dashboard', esc(s.tenant_name || State.settings?.name || '')) + `
     <div class="stat-grid">
       ${card('Total Assets', s.total_assets, 'box', true)}
       ${card('Deployed',     s.deployed,     'arrowOut')}
       ${card('Available',    s.available,    'check')}
       ${card('Total Value',  money(s.total_value), 'dollar')}
+      ${overdueCount > 0 ? card('Overdue Maintenance', overdueCount, 'tool', false) : ''}
     </div>
     <div class="grid-2">
       <div class="panel"><div class="panel-head"><h3>Assets by Category</h3></div>
@@ -686,6 +842,10 @@ function renderTenantDashboard(s) {
       </div>
       <div class="panel"><div class="panel-head"><h3>${icon('alert', 16)} Expiring Warranties</h3></div>
         <div class="panel-body">${expiring}</div></div>
+    </div>
+    <div class="grid-2">
+      <div class="panel"><div class="panel-head"><h3>${icon('tool', 16)} Upcoming Maintenance</h3></div>
+        <div class="panel-body">${upcomingMaint}</div></div>
     </div>`;
   drawCharts(s);
 }
@@ -844,8 +1004,14 @@ function openClientForm(id = null) {
                    accent_color: f.get('accent_color'), logo_url: f.get('logo_url') };
     const btn = e.target.querySelector('[type=submit]'); btn.disabled = true;
     try {
-      await api(id ? '/tenants/' + id : '/tenants', { method: id ? 'PUT' : 'POST', json: body });
-      closeModal(); toast(id ? 'Client updated' : 'Client created'); pageClients();
+      const result = await api(id ? '/tenants/' + id : '/tenants', { method: id ? 'PUT' : 'POST', json: body });
+      if (!id) {
+        closeModal();
+        toast('Client created');
+        openOnboardingWizard(result.id, result.name, result.slug);
+      } else {
+        closeModal(); toast('Client updated'); pageClients();
+      }
     } catch (err) { toast(err.message, 'err'); btn.disabled = false; }
   };
 }
@@ -854,6 +1020,133 @@ async function deleteClient(id) {
   if (!confirm('Delete this client and ALL their data? This cannot be undone.')) return;
   try { await api('/tenants/' + id, { method: 'DELETE' }); toast('Client deleted'); pageClients(); }
   catch (e) { toast(e.message, 'err'); }
+}
+
+// ============ ONBOARDING WIZARD ============
+const _wizard = { tenantId: null, tenantName: null, slug: null, step: 1 };
+
+async function openOnboardingWizard(tenantId, tenantName, slug) {
+  _wizard.tenantId = tenantId;
+  _wizard.tenantName = tenantName;
+  _wizard.slug = slug;
+  _wizard.step = 1;
+  _renderWizardStep();
+}
+
+function _wizardHdr(step) {
+  const steps = ['Invite User', 'Add Categories', 'Done'];
+  const dots = steps.map((s, i) => `<span style="display:inline-flex;align-items:center;gap:5px;font-size:12.5px;
+    color:${i + 1 === step ? 'var(--accent)' : i + 1 < step ? 'var(--emerald)' : 'var(--text-muted)'}">
+    <span style="width:20px;height:20px;border-radius:50%;background:${i + 1 === step ? 'var(--accent)' : i + 1 < step ? 'var(--emerald)' : 'var(--border)'};
+      display:grid;place-items:center;font-size:11px;font-weight:700;color:${i + 1 <= step ? '#000' : 'var(--text-muted)'}">
+      ${i + 1 < step ? '✓' : i + 1}</span>${s}</span>`).join('<span style="flex:1;height:1px;background:var(--border);margin:0 6px"></span>');
+  return `<div style="display:flex;align-items:center;gap:4px;margin-bottom:20px">${dots}</div>`;
+}
+
+function _renderWizardStep() {
+  const { tenantId, tenantName, slug, step } = _wizard;
+  const host = `${slug}.localhost`;
+  const headers = { ...State.token ? { 'Authorization': `Bearer ${State.token}` } : {}, host };
+
+  if (step === 1) {
+    openModal(`
+      <div class="modal-head"><h2>Set up ${esc(tenantName)}</h2><button class="x-btn" onclick="closeModal();pageClients()">✕</button></div>
+      <div class="modal-body">
+        ${_wizardHdr(1)}
+        <p style="margin-bottom:16px;color:var(--text-muted)">Invite the first user for this client. You can skip and do this later.</p>
+        <div class="field"><label>Email address</label><input id="wiz-email" type="email" placeholder="admin@client.com"></div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-ghost" onclick="_wizSkip()">Skip</button>
+        <button class="btn btn-primary" onclick="_wizInvite()">Send Invite & Continue</button>
+      </div>`, 'wide');
+  } else if (step === 2) {
+    openModal(`
+      <div class="modal-head"><h2>Set up ${esc(tenantName)}</h2><button class="x-btn" onclick="closeModal();pageClients()">✕</button></div>
+      <div class="modal-body">
+        ${_wizardHdr(2)}
+        <p style="margin-bottom:14px;color:var(--text-muted)">Default categories have been added. Add any extra categories specific to this client.</p>
+        <div id="wiz-cats-list" style="margin-bottom:14px"></div>
+        <div style="display:flex;gap:8px">
+          <input id="wiz-cat-name" class="field" style="flex:1;margin:0" placeholder="Category name (e.g. Printer)">
+          <select id="wiz-cat-icon" style="padding:9px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);color:var(--text)">
+            ${['box','laptop','monitor','tv','smartphone','server','wifi','mouse'].map(ic => `<option value="${ic}">${ic}</option>`).join('')}
+          </select>
+          <button class="btn btn-accent btn-sm" onclick="_wizAddCat()">Add</button>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-ghost" onclick="_wizSkip()">Skip</button>
+        <button class="btn btn-primary" onclick="_wizStep(3)">Next →</button>
+      </div>`, 'wide');
+    _wizLoadCats();
+  } else {
+    openModal(`
+      <div class="modal-head"><h2>Setup complete!</h2><button class="x-btn" onclick="closeModal();pageClients()">✕</button></div>
+      <div class="modal-body">
+        ${_wizardHdr(3)}
+        <div style="text-align:center;padding:20px 0">
+          <div style="font-size:48px;margin-bottom:12px">🎉</div>
+          <h3 style="font-family:var(--display);font-size:20px;margin-bottom:8px">${esc(tenantName)} is ready</h3>
+          <p class="muted">You can now import assets, add employees, and configure settings from the client portal.</p>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-ghost" onclick="closeModal();pageClients()">Back to Clients</button>
+        <button class="btn btn-primary" onclick="closeModal();previewAsClient(${tenantId})">Open Client Portal →</button>
+      </div>`, 'wide');
+  }
+}
+
+function _wizStep(n) { _wizard.step = n; _renderWizardStep(); }
+function _wizSkip() { _wizStep(_wizard.step + 1); }
+
+async function _wizInvite() {
+  const email = (document.getElementById('wiz-email')?.value || '').trim();
+  if (!email) { _wizStep(2); return; }
+  try {
+    let roles = []; try { roles = await api('/users/roles/all'); } catch (_) {}
+    const clientAdmin = roles.find(r => r.name === 'client_admin');
+    if (clientAdmin) {
+      await api('/invites', { method: 'POST', json: {
+        email, role_id: clientAdmin.id, tenant_id: _wizard.tenantId
+      }});
+      toast(`Invite sent to ${email}`);
+    }
+  } catch (e) { toast(e.message, 'err'); }
+  _wizStep(2);
+}
+
+async function _wizLoadCats() {
+  const wrap = document.getElementById('wiz-cats-list');
+  if (!wrap) return;
+  try {
+    const catsResp = await fetch(`/api/categories`, { headers: {
+      'Authorization': `Bearer ${State.token}`,
+      'host': `${_wizard.slug}.localhost`,
+    }}).then(r => r.json());
+    const cats = catsResp.items ?? catsResp;
+    wrap.innerHTML = cats.length
+      ? `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">${cats.map(c =>
+          `<span class="tag" style="padding:4px 8px;border-radius:6px;background:var(--bg)">${esc(c.name)}</span>`).join('')}</div>`
+      : '<p class="muted" style="font-size:13px">No categories yet.</p>';
+  } catch (_) {}
+}
+
+async function _wizAddCat() {
+  const name = (document.getElementById('wiz-cat-name')?.value || '').trim();
+  const icon_name = document.getElementById('wiz-cat-icon')?.value || 'box';
+  if (!name) return;
+  try {
+    await fetch('/api/categories', { method: 'POST',
+      headers: { 'Authorization': `Bearer ${State.token}`,
+                 'host': `${_wizard.slug}.localhost`,
+                 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, icon: icon_name }),
+    });
+    document.getElementById('wiz-cat-name').value = '';
+    _wizLoadCats();
+  } catch (e) { toast(e.message, 'err'); }
 }
 
 // ============ INVITE FORM ============
@@ -1122,6 +1415,65 @@ async function copyInviteLink(link) {
     toast('Copied!');
   } catch (_) {
     toast('Unable to copy link', 'err');
+  }
+}
+
+// ============ PUBLIC ASSET CHECK-IN PAGE ============
+async function renderPublicCheckin(token) {
+  const app = document.getElementById('app');
+  app.innerHTML = `<div class="login-wrap"><div class="login-card"><div class="loading"><div class="spinner"></div></div></div></div>`;
+
+  let info;
+  try {
+    const r = await fetch(`/api/assets/public/checkin/${token}`);
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({ detail: 'Link not found or already used' }));
+      throw new Error(err.detail || 'Invalid link');
+    }
+    info = await r.json();
+  } catch (e) {
+    app.innerHTML = `<div class="login-wrap"><div class="login-card">
+      <div class="login-logo"><div class="mark"><span></span></div><b>Tether</b></div>
+      <h1 style="color:var(--red)">Link unavailable</h1>
+      <p class="sub">${esc(e.message)}</p>
+    </div></div>`;
+    return;
+  }
+
+  app.innerHTML = `
+    <div class="login-wrap">
+      <div class="login-card">
+        <div class="login-logo"><div class="mark"><span></span></div><b>Tether</b></div>
+        <h1>Return asset</h1>
+        <p class="sub">Confirm you are returning this asset:</p>
+        <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px 16px;margin:14px 0">
+          <div style="font-family:var(--mono);font-size:15px;font-weight:700">${esc(info.asset_tag)}</div>
+          <div style="font-size:14px;margin-top:4px">${esc(info.asset_name)}</div>
+          ${info.assigned_to ? `<div style="font-size:12.5px;color:var(--text-muted);margin-top:4px">Assigned to ${esc(info.assigned_to)}</div>` : ''}
+        </div>
+        <button id="checkin-btn" class="btn btn-primary" style="width:100%;justify-content:center;padding:11px" onclick="_submitPublicCheckin('${token}')">
+          Check In Asset
+        </button>
+        <div id="checkin-result"></div>
+      </div>
+    </div>`;
+}
+
+async function _submitPublicCheckin(token) {
+  const btn = document.getElementById('checkin-btn');
+  btn.disabled = true; btn.textContent = 'Checking in…';
+  try {
+    const r = await fetch(`/api/assets/public/checkin/${token}`, { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || 'Check-in failed');
+    document.getElementById('checkin-result').innerHTML = `
+      <div style="margin-top:16px;padding:12px 16px;background:var(--emerald)18;border:1px solid var(--emerald)44;border-radius:var(--radius-sm);color:var(--emerald);font-weight:600">
+        ✓ ${esc(d.asset_tag)} checked in successfully
+      </div>`;
+    btn.style.display = 'none';
+  } catch (e) {
+    document.getElementById('checkin-result').innerHTML = `<p style="color:var(--red);margin-top:12px">${esc(e.message)}</p>`;
+    btn.disabled = false; btn.textContent = 'Check In Asset';
   }
 }
 

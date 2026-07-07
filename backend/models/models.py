@@ -20,6 +20,9 @@ class Tenant(Base):
     email_from_address = Column(String(320), nullable=True)
     email_logo_url     = Column(String(500), nullable=True)
     email_accent_color = Column(String(20), nullable=True)
+    asset_tag_prefix   = Column(String(20), nullable=True, default="")
+    webhook_url        = Column(String(500), nullable=True)
+    webhook_secret     = Column(String(120), nullable=True)
 
     users          = relationship("User", back_populates="tenant", cascade="all, delete-orphan")
     assets         = relationship("Asset", back_populates="tenant", cascade="all, delete-orphan")
@@ -184,6 +187,13 @@ class Asset(Base):
     location      = relationship("Location", back_populates="assets")
     assigned_to   = relationship("Employee", back_populates="assets")
     history       = relationship("CheckoutLog", back_populates="asset", cascade="all, delete-orphan")
+    notes_log     = relationship("AssetNote", back_populates="asset", cascade="all, delete-orphan",
+                                 order_by="desc(AssetNote.created_at)")
+    photos        = relationship("AssetPhoto", back_populates="asset", cascade="all, delete-orphan",
+                                 order_by="desc(AssetPhoto.created_at)")
+    maintenance_schedules = relationship("AssetMaintenance", back_populates="asset",
+                                         cascade="all, delete-orphan",
+                                         order_by="AssetMaintenance.due_date")
 
 
 class CheckoutLog(Base):
@@ -239,7 +249,7 @@ class LicenceAssignment(Base):
 class InviteToken(Base):
     __tablename__ = "invite_tokens"
     id         = Column(Integer, primary_key=True)
-    token      = Column(String(255), unique=True, nullable=False, index=True)
+    token_hash = Column(String(64), unique=True, nullable=False, index=True)
     tenant_id  = Column(Integer, ForeignKey("tenants.id"), nullable=False)
     role_id    = Column(Integer, ForeignKey("roles.id"), nullable=False)
     email      = Column(String(320), nullable=False)
@@ -296,6 +306,83 @@ class CustomFieldValue(Base):
     value        = Column(Text, default="")
     field_def    = relationship("CustomFieldDef", back_populates="values")
     asset        = relationship("Asset")
+
+
+class UserTotp(Base):
+    """TOTP secret for a user. One row per user; deleted when 2FA is disabled."""
+    __tablename__ = "user_totp"
+    id         = Column(Integer, primary_key=True)
+    user_id    = Column(Integer, ForeignKey("users.id"), unique=True, nullable=False)
+    secret     = Column(String(64), nullable=False)   # base32 secret (stored plaintext; DB at-rest encryption is operator responsibility)
+    enabled    = Column(Boolean, default=False)        # False until first successful verify
+    created_at = Column(DateTime, default=datetime.utcnow)
+    user       = relationship("User")
+
+
+class AssetCheckinToken(Base):
+    """Single-use token for a public (unauthenticated) asset check-in."""
+    __tablename__ = "asset_checkin_tokens"
+    id         = Column(Integer, primary_key=True)
+    token      = Column(String(64), unique=True, nullable=False, index=True)
+    asset_id   = Column(Integer, ForeignKey("assets.id"), nullable=False)
+    tenant_id  = Column(Integer, ForeignKey("tenants.id"), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=False)
+    used_at    = Column(DateTime, nullable=True)
+    asset      = relationship("Asset")
+
+
+class AssetNote(Base):
+    """Append-only timestamped note on an asset."""
+    __tablename__ = "asset_notes"
+    id         = Column(Integer, primary_key=True)
+    asset_id   = Column(Integer, ForeignKey("assets.id"), nullable=False, index=True)
+    tenant_id  = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
+    author_id  = Column(Integer, ForeignKey("users.id"), nullable=True)
+    author_name = Column(String(120), default="")
+    body       = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    asset      = relationship("Asset", back_populates="notes_log")
+    author     = relationship("User")
+
+
+class SavedFilter(Base):
+    """Named asset filter set, scoped per user and tenant."""
+    __tablename__ = "saved_filters"
+    id         = Column(Integer, primary_key=True)
+    user_id    = Column(Integer, ForeignKey("users.id"), nullable=False)
+    tenant_id  = Column(Integer, ForeignKey("tenants.id"), nullable=True)
+    name       = Column(String(120), nullable=False)
+    filters    = Column(Text, default="{}")   # JSON blob: {q, status, category_id, location_id, department}
+    created_at = Column(DateTime, default=datetime.utcnow)
+    user       = relationship("User")
+
+
+class AssetMaintenance(Base):
+    __tablename__ = "asset_maintenance"
+    id            = Column(Integer, primary_key=True)
+    asset_id      = Column(Integer, ForeignKey("assets.id"), nullable=False)
+    tenant_id     = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
+    title         = Column(String(200), nullable=False)
+    maintenance_type = Column(String(80), default="")
+    due_date      = Column(Date, nullable=False)
+    assigned_to_id = Column(Integer, ForeignKey("employees.id"), nullable=True)
+    notes         = Column(Text, default="")
+    status        = Column(String(32), default="scheduled")  # scheduled | done | overdue
+    completed_at  = Column(DateTime, nullable=True)
+    created_at    = Column(DateTime, default=datetime.utcnow)
+    asset         = relationship("Asset", back_populates="maintenance_schedules")
+    assigned_to   = relationship("Employee")
+
+
+class AssetPhoto(Base):
+    __tablename__ = "asset_photos"
+    id         = Column(Integer, primary_key=True)
+    asset_id   = Column(Integer, ForeignKey("assets.id"), nullable=False)
+    tenant_id  = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
+    filename   = Column(String(260), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    asset      = relationship("Asset", back_populates="photos")
 
 
 class AssetRequest(Base):

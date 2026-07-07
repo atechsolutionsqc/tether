@@ -33,8 +33,8 @@ class FieldValueIn(BaseModel):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def get_custom_field_values(asset_id: int, db: Session) -> list:
-    """Return [{label, field_type, value}] for an asset."""
+def get_custom_field_values(asset_id: int, db: Session, tenant_id: Optional[int] = None) -> list:
+    """Return [{label, field_type, value}] for an asset, scoped to tenant."""
     rows = (
         db.query(CustomFieldValue, CustomFieldDef)
         .join(CustomFieldDef, CustomFieldValue.field_def_id == CustomFieldDef.id)
@@ -49,6 +49,8 @@ def get_custom_field_values(asset_id: int, db: Session) -> list:
             "value":        fv.value,
         }
         for fv, fd in rows
+        # Only include values whose field_def belongs to the requesting tenant
+        if tenant_id is None or fd.tenant_id == tenant_id
     ]
 
 
@@ -177,7 +179,7 @@ def get_values(
         raise HTTPException(404, "Asset not found")
     if tenant_id is not None and a.tenant_id != tenant_id:
         raise HTTPException(404, "Asset not found")
-    return get_custom_field_values(asset_id, db)
+    return get_custom_field_values(asset_id, db, tenant_id)
 
 
 @router.put("/values/{asset_id}")
@@ -213,4 +215,4 @@ def upsert_values(
                 value=item.value,
             ))
     db.commit()
-    return get_custom_field_values(asset_id, db)
+    return get_custom_field_values(asset_id, db, tenant_id)

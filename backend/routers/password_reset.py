@@ -135,11 +135,7 @@ def validate_reset_token(token: str, db: Session = Depends(get_db)):
     if not record or record.expires_at < datetime.utcnow():
         raise HTTPException(400, "This reset link is invalid or has expired.")
 
-    return {
-        "valid": True,
-        "email": record.user.email,
-        "name":  record.user.name,
-    }
+    return {"valid": True}
 
 
 @router.post("/reset-password")

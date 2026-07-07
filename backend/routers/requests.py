@@ -164,6 +164,17 @@ def update_request(rid: int, body: RequestUpdate,
         except Exception as exc:
             log.warning(f"Request update notification failed: {exc}")
 
+    if body.status != old_status:
+        try:
+            from webhook_service import fire as _wh_fire
+            tenant = db.query(Tenant).get(r.tenant_id)
+            _wh_fire(tenant, "request.status_changed", {
+                "request_id": r.id, "title": r.title,
+                "old_status": old_status, "new_status": body.status,
+            })
+        except Exception:
+            pass
+
     return _out(r)
 
 

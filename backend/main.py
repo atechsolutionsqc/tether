@@ -1,9 +1,28 @@
 import logging
-import os, sys
+import logging.config
+import json
+import os, sys, time
 from contextlib import asynccontextmanager
 from typing import Optional
 
-logging.basicConfig(level=logging.INFO)
+_LOG_FORMAT = os.environ.get("LOG_FORMAT", "text")
+
+if _LOG_FORMAT == "json":
+    class _JsonFormatter(logging.Formatter):
+        def format(self, record):
+            return json.dumps({
+                "ts":      self.formatTime(record, "%Y-%m-%dT%H:%M:%S"),
+                "level":   record.levelname,
+                "logger":  record.name,
+                "msg":     record.getMessage(),
+                **({"exc": self.formatException(record.exc_info)} if record.exc_info else {}),
+            })
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(_JsonFormatter())
+    logging.root.setLevel(logging.INFO)
+    logging.root.handlers = [_handler]
+else:
+    logging.basicConfig(level=logging.INFO)
 
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
@@ -28,6 +47,8 @@ from routers import admin_router
 from routers import reports as reports_router
 from routers import licences as licences_router
 from routers import custom_fields as custom_fields_router
+from routers import totp as totp_router
+from routers import saved_filters as saved_filters_router
 
 
 _log = logging.getLogger(__name__)
@@ -40,13 +61,9 @@ async def lifespan(app: FastAPI):
     except Exception:
         _log.exception("init_db() failed — check database connection and schema")
         raise
-    # Start background scheduler
+    # Start background scheduler (includes backup loop when BACKUP_ENABLED=true)
     from scheduler import start_scheduler
-    from backup_service import BACKUP_ENABLED, backup_loop
     _scheduler_tasks = await start_scheduler()
-    if BACKUP_ENABLED:
-        import asyncio
-        _scheduler_tasks.append(asyncio.create_task(backup_loop()))
     yield
     # Cancel background tasks on shutdown
     for task in _scheduler_tasks:
@@ -84,6 +101,28 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(SecurityHeadersMiddleware)
 
+_access_log = logging.getLogger("tether.access")
+
+class RequestLoggingMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        t0 = time.perf_counter()
+        response = await call_next(request)
+        duration_ms = round((time.perf_counter() - t0) * 1000, 1)
+        if _LOG_FORMAT == "json":
+            _access_log.info(json.dumps({
+                "method": request.method,
+                "path": request.url.path,
+                "status": response.status_code,
+                "duration_ms": duration_ms,
+                "host": request.headers.get("host", ""),
+            }))
+        else:
+            _access_log.debug("%s %s %s %.1fms",
+                request.method, request.url.path, response.status_code, duration_ms)
+        return response
+
+app.add_middleware(RequestLoggingMiddleware)
+
 BASE_DIR     = os.path.dirname(os.path.abspath(__file__))
 FRONTEND_DIR = os.path.join(os.path.dirname(BASE_DIR), "frontend")
 
@@ -106,6 +145,8 @@ app.include_router(admin_router.router,     prefix="/api/admin",      tags=["adm
 app.include_router(reports_router.router,   prefix="/api/reports",    tags=["reports"])
 app.include_router(licences_router.router,      prefix="/api/licences",      tags=["licences"])
 app.include_router(custom_fields_router.router, prefix="/api/custom-fields", tags=["custom-fields"])
+app.include_router(saved_filters_router.router, prefix="/api/saved-filters", tags=["saved-filters"])
+app.include_router(totp_router.router,          prefix="/api/auth/totp",    tags=["auth"])
 
 
 # ── Public: tenant branding (for white-label login page) ─────────────────────
@@ -170,7 +211,10 @@ def get_settings(db: Session = Depends(get_db),
             "email_from_name": t.email_from_name or "",
             "email_from_address": t.email_from_address or "",
             "email_logo_url": t.email_logo_url or "",
-            "email_accent_color": t.email_accent_color or ""}
+            "email_accent_color": t.email_accent_color or "",
+            "asset_tag_prefix": t.asset_tag_prefix or "",
+            "webhook_url": t.webhook_url or "",
+            "webhook_secret": t.webhook_secret or ""}
 
 
 @app.put("/api/settings")
@@ -187,6 +231,9 @@ def update_settings(body: SettingsIn, db: Session = Depends(get_db),
     t.email_from_address = body.email_from_address or None
     t.email_logo_url = body.email_logo_url or None
     t.email_accent_color = body.email_accent_color or None
+    t.asset_tag_prefix = (body.asset_tag_prefix or "").strip().upper() or None
+    t.webhook_url = (body.webhook_url or "").strip() or None
+    t.webhook_secret = (body.webhook_secret or "").strip() or None
     db.commit()
     return {"ok": True}
 
@@ -201,7 +248,7 @@ def health(db: Session = Depends(get_db)):
         raise HTTPException(503, "Database unavailable")
     return {
         "status": "ok",
-        "version": "1.0.0",
+        "version": app.version,
         "database": db_status,
         "deployment_mode": os.environ.get("DEPLOYMENT_MODE", "selfhosted"),
     }
@@ -211,6 +258,11 @@ def health(db: Session = Depends(get_db)):
 if os.environ.get("DEPLOYMENT_MODE") == "demo":
     from routers import demo as demo_router
     app.include_router(demo_router.router, prefix="/api/admin", tags=["demo"])
+
+# ── Uploaded asset photos ─────────────────────────────────────────────────────
+_UPLOADS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "uploads")
+os.makedirs(_UPLOADS_DIR, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=_UPLOADS_DIR), name="uploads")
 
 # ── Frontend SPA ──────────────────────────────────────────────────────────────
 app.mount("/static", StaticFiles(directory=os.path.join(FRONTEND_DIR, "static")), name="static")

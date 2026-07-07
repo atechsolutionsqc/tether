@@ -111,12 +111,12 @@ class TestStandaloneSeeding:
     def test_default_categories_seeded(self, standalone_db, standalone_auth):
         r = standalone_db.get("/api/categories", headers=standalone_auth)
         assert r.status_code == 200
-        names = [c["name"] for c in r.json()]
+        names = [c["name"] for c in r.json()["items"]]
         assert "Laptop" in names
         assert "Server" in names
 
     def test_default_locations_seeded(self, standalone_db, standalone_auth):
         r = standalone_db.get("/api/locations", headers=standalone_auth)
         assert r.status_code == 200
-        names = [l["name"] for l in r.json()]
+        names = [l["name"] for l in r.json()["items"]]
         assert "Head Office" in names

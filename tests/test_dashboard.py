@@ -71,6 +71,8 @@ class TestTenantDashboard:
         assert "total_assets"            in data
         assert "by_status"               in data
         assert "expiring_warranties"     in data
+        assert "overdue_maintenance"     in data
+        assert "upcoming_maintenance"    in data
 
     def test_tenant_dashboard_scoped(self, client, auth):
         """Two tenants see different stats."""
@@ -101,3 +103,36 @@ class TestTenantDashboard:
         assert d1["total_assets"] >= 3
         assert d2["total_assets"] >= 1
         assert d1["total_assets"] > d2["total_assets"]
+
+
+class TestClientDrilldown:
+    def test_drilldown_returns_full_stats(self, client, auth, tenant):
+        r = client.get(f"/api/dashboard/client/{tenant['id']}", headers=auth)
+        assert r.status_code == 200
+        d = r.json()
+        assert d["mode"] == "tenant"
+        assert "total_assets" in d
+        assert "expiring_warranties" in d
+        assert "recent_activity" in d
+        assert "by_status" in d
+
+    def test_drilldown_requires_msp_permission(self, client, auth, tenant, roles):
+        import time as _time
+        email = f"drill{int(_time.time()*1000)%9999}@test.com"
+        client.post("/api/users", json={
+            "name": "Drill Client", "email": email, "password": "password123",
+            "role_id": roles["client_admin"]["id"], "tenant_id": tenant["id"],
+            "is_msp_staff": False,
+        }, headers=auth)
+        tok = client.post("/api/auth/login", data={"username": email, "password": "password123"}).json()["access_token"]
+        r = client.get(f"/api/dashboard/client/{tenant['id']}",
+                       headers={"Authorization": f"Bearer {tok}", "host": f"{tenant['slug']}.localhost"})
+        assert r.status_code == 403
+
+    def test_drilldown_404_for_unknown_tenant(self, client, auth):
+        r = client.get("/api/dashboard/client/99999", headers=auth)
+        assert r.status_code == 404
+
+    def test_drilldown_requires_auth(self, client, tenant):
+        r = client.get(f"/api/dashboard/client/{tenant['id']}")
+        assert r.status_code == 401

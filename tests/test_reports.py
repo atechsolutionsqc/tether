@@ -251,3 +251,96 @@ class TestReportsEndpoints:
         tenant_names_v = {x["tenant_name"] for x in value_data["by_tenant"]}
         assert t1["name"] in tenant_names_v
         assert t2["name"] in tenant_names_v
+
+
+class TestAgeReport:
+    def _headers(self, auth, tenant):
+        return {**auth, "host": f"{tenant['slug']}.localhost"}
+
+    def test_age_report_returns_expected_shape(self, client, auth, tenant):
+        r = client.get("/api/reports/age", headers=self._headers(auth, tenant))
+        assert r.status_code == 200
+        d = r.json()
+        assert "brackets" in d
+        assert "total" in d
+        assert "no_purchase_date" in d
+        assert len(d["brackets"]) == 4
+        labels = [b["label"] for b in d["brackets"]]
+        assert "0–1 yr" in labels
+        assert "5+ yr" in labels
+
+    def test_asset_with_old_purchase_date_in_correct_bracket(self, client, auth, tenant, tenant_headers):
+        import uuid
+        tag = f"AGE-{uuid.uuid4().hex[:8].upper()}"
+        old_date = (date.today() - timedelta(days=365 * 4)).isoformat()
+        client.post("/api/assets", json={
+            "asset_tag": tag, "name": "Old Box", "status": "available",
+            "purchase_date": old_date,
+        }, headers=tenant_headers)
+        r = client.get("/api/reports/age", headers=self._headers(auth, tenant))
+        d = r.json()
+        bracket = next(b for b in d["brackets"] if b["label"] == "3–5 yr")
+        assert any(a["asset_tag"] == tag for a in bracket["assets"])
+
+    def test_age_export_returns_csv(self, client, auth, tenant):
+        r = client.get("/api/reports/age/export", headers=self._headers(auth, tenant))
+        assert r.status_code == 200
+        assert "text/csv" in r.headers["content-type"]
+
+    def test_age_report_requires_auth(self, client, tenant):
+        r = client.get("/api/reports/age", headers={"host": f"{tenant['slug']}.localhost"})
+        assert r.status_code == 401
+
+
+class TestDepreciationSchedule:
+    def _headers(self, auth, tenant):
+        return {**auth, "host": f"{tenant['slug']}.localhost"}
+
+    def _make_asset(self, client, tenant_headers, uid):
+        import time as _time
+        _tag = f"DS-{int(_time.time() * 1000) % 999999:06d}"
+        return client.post("/api/assets", json={
+            "asset_tag": _tag, "name": f"Depr Asset {uid}", "status": "available",
+            "purchase_cost": 3000.0, "purchase_date": "2021-01-01",
+            "useful_life_years": 3, "salvage_value": 300.0,
+        }, headers=tenant_headers).json()
+
+    def test_schedule_returns_correct_rows(self, client, auth, tenant, tenant_headers):
+        uid = _uid()
+        a = self._make_asset(client, tenant_headers, uid)
+        r = client.get(f"/api/reports/depreciation/schedule/{a['id']}",
+                       headers=self._headers(auth, tenant))
+        assert r.status_code == 200
+        d = r.json()
+        assert d["useful_life_years"] == 3
+        assert len(d["schedule"]) == 3
+        first = d["schedule"][0]
+        assert first["year"] == 1
+        assert "book_value" in first
+        assert "annual_depreciation" in first
+
+    def test_schedule_book_value_decreases(self, client, auth, tenant, tenant_headers):
+        uid = _uid()
+        a = self._make_asset(client, tenant_headers, uid)
+        d = client.get(f"/api/reports/depreciation/schedule/{a['id']}",
+                       headers=self._headers(auth, tenant)).json()
+        bvs = [r["book_value"] for r in d["schedule"]]
+        assert bvs[0] > bvs[-1]
+
+    def test_schedule_export_returns_csv(self, client, auth, tenant, tenant_headers):
+        uid = _uid()
+        a = self._make_asset(client, tenant_headers, uid)
+        r = client.get(f"/api/reports/depreciation/schedule/{a['id']}/export",
+                       headers=self._headers(auth, tenant))
+        assert r.status_code == 200
+        assert "text/csv" in r.headers["content-type"]
+
+    def test_schedule_404_for_missing_asset(self, client, auth, tenant):
+        r = client.get("/api/reports/depreciation/schedule/999999",
+                       headers=self._headers(auth, tenant))
+        assert r.status_code == 404
+
+    def test_schedule_requires_auth(self, client, tenant):
+        r = client.get("/api/reports/depreciation/schedule/1",
+                       headers={"host": f"{tenant['slug']}.localhost"})
+        assert r.status_code == 401

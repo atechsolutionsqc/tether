@@ -1,3 +1,4 @@
+import hashlib
 import os
 import secrets
 from datetime import datetime, timedelta
@@ -11,6 +12,10 @@ from models.models import InviteToken, User, Role, Tenant
 from security import get_current_user, CurrentUser, hash_password, resolve_tenant_slug, validate_password_strength
 
 router = APIRouter()
+
+
+def _hash_token(raw: str) -> str:
+    return hashlib.sha256(raw.encode()).hexdigest()
 
 
 class InviteCreate(BaseModel):
@@ -55,7 +60,7 @@ def create_invite(body: InviteCreate, db: Session = Depends(get_db),
 
     token = secrets.token_urlsafe(32)
     inv = InviteToken(
-        token=token,
+        token_hash=_hash_token(token),
         tenant_id=body.tenant_id,
         role_id=body.role_id,
         email=body.email,
@@ -96,7 +101,7 @@ def create_invite(body: InviteCreate, db: Session = Depends(get_db),
 
 @router.get("/validate/{token}")
 def validate_invite(token: str, db: Session = Depends(get_db)):
-    inv = db.query(InviteToken).filter(InviteToken.token == token).first()
+    inv = db.query(InviteToken).filter(InviteToken.token_hash == _hash_token(token)).first()
     if not inv or inv.used:
         raise HTTPException(400, "Invite link is invalid or has already been used")
     if datetime.utcnow() > inv.expires_at:
@@ -114,7 +119,7 @@ def validate_invite(token: str, db: Session = Depends(get_db)):
 
 @router.post("/accept")
 def accept_invite(body: AcceptInvite, db: Session = Depends(get_db)):
-    inv = db.query(InviteToken).filter(InviteToken.token == body.token).first()
+    inv = db.query(InviteToken).filter(InviteToken.token_hash == _hash_token(body.token)).first()
     if not inv or inv.used:
         raise HTTPException(400, "Invite is invalid or already used")
     if datetime.utcnow() > inv.expires_at:

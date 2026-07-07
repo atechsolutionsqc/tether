@@ -165,3 +165,6 @@ class SettingsIn(BaseModel):
     email_from_address: Optional[str]  = Field(None, max_length=320)
     email_logo_url:     Optional[str]  = Field(None, max_length=500)
     email_accent_color: Optional[str]  = Field(None, max_length=20)
+    asset_tag_prefix:   Optional[str]  = Field(None, max_length=20)
+    webhook_url:        Optional[str]  = Field(None, max_length=500)
+    webhook_secret:     Optional[str]  = Field(None, max_length=120)

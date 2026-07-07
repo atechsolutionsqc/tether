@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from db.database import get_db
-from models.models import Asset, Category, Location, Employee, CheckoutLog, Tenant
+from models.models import Asset, AssetMaintenance, Category, Location, Employee, CheckoutLog, Tenant
 from security import get_current_user, CurrentUser, get_tenant_id
 
 router = APIRouter()
@@ -30,6 +30,17 @@ def _tenant_stats(db, tenant_id):
     recent = db.query(CheckoutLog)\
                .join(Asset).filter(Asset.tenant_id == tenant_id)\
                .order_by(CheckoutLog.timestamp.desc()).limit(8).all()
+    overdue_maint = db.query(AssetMaintenance).filter(
+        AssetMaintenance.tenant_id == tenant_id,
+        AssetMaintenance.status.in_(["scheduled", "overdue"]),
+        AssetMaintenance.due_date < date.today(),
+    ).count()
+    upcoming_maint = db.query(AssetMaintenance).filter(
+        AssetMaintenance.tenant_id == tenant_id,
+        AssetMaintenance.status == "scheduled",
+        AssetMaintenance.due_date >= date.today(),
+        AssetMaintenance.due_date <= soon,
+    ).order_by(AssetMaintenance.due_date).limit(5).all()
     return {
         "total_assets": total,
         "available":    by_status.get("available", 0),
@@ -44,6 +55,14 @@ def _tenant_stats(db, tenant_id):
             {"name": "Maintenance",  "count": by_status.get("maintenance", 0)},
             {"name": "Retired",      "count": by_status.get("retired", 0)},
         ],
+        "overdue_maintenance": overdue_maint,
+        "upcoming_maintenance": [
+            {"id": m.id, "title": m.title, "due_date": m.due_date.isoformat(),
+             "asset_id": m.asset_id,
+             "asset_tag": m.asset.asset_tag if m.asset else "",
+             "maintenance_type": m.maintenance_type}
+            for m in upcoming_maint
+        ],
         "expiring_warranties": [
             {"asset_tag": a.asset_tag, "name": a.name, "warranty_expiry": str(a.warranty_expiry)}
             for a in expiring
@@ -55,6 +74,28 @@ def _tenant_stats(db, tenant_id):
             for r in recent
         ],
     }
+
+
+@router.get("/client/{tenant_id}")
+def client_drilldown(
+    tenant_id: int,
+    db: Session = Depends(get_db),
+    cu: CurrentUser = Depends(get_current_user),
+):
+    """Full stats for a single client tenant. MSP staff only."""
+    from fastapi import HTTPException
+    cu.require("msp.dashboard")
+    t = db.query(Tenant).get(tenant_id)
+    if not t:
+        raise HTTPException(404, "Tenant not found")
+    result = _tenant_stats(db, tenant_id)
+    result["mode"]       = "tenant"
+    result["tenant_name"] = t.name
+    result["currency"]   = t.currency
+    result["categories"] = db.query(Category).filter(Category.tenant_id == tenant_id).count()
+    result["locations"]  = db.query(Location).filter(Location.tenant_id == tenant_id).count()
+    result["employees"]  = db.query(Employee).filter(Employee.tenant_id == tenant_id).count()
+    return result
 
 
 @router.get("/stats")

@@ -134,6 +134,13 @@ def _run_migrations(conn):
         # 0.0.8 — depreciation columns on assets
         ("assets",  "useful_life_years",  "INT"),
         ("assets",  "salvage_value",      "DOUBLE"),
+        # 1.1.1 — invite token_hash column (replaces plaintext token)
+        ("invite_tokens", "token_hash", "VARCHAR(64)"),
+        # 1.1.0 — per-tenant asset tag prefix
+        ("tenants", "asset_tag_prefix", "VARCHAR(20)"),
+        # 1.2.0 — outbound webhook config per tenant
+        ("tenants", "webhook_url",    "VARCHAR(500)"),
+        ("tenants", "webhook_secret", "VARCHAR(120)"),
     ]
 
     for table, column, col_type in migrations:
@@ -156,8 +163,8 @@ def init_db():
     log = logging.getLogger(__name__)
 
     from models import models  # noqa: F401
-    # Ensure all model tables including password reset tokens are registered
     from routers.password_reset import PasswordResetToken  # noqa: F401
+    from models.models import UserTotp, SavedFilter, AssetNote, AssetCheckinToken, AssetPhoto, AssetMaintenance  # noqa: F401
 
     # Retry loop — gives MariaDB time to finish initialising on first-run
     for attempt in range(1, 11):
@@ -179,6 +186,25 @@ def init_db():
     engine.dispose()
 
     _seed(SessionLocal())
+
+    # Warn if running without Redis — rate limiting won't be shared across workers
+    from rate_limit import _redis_client
+    worker_count = int(os.environ.get("WEB_CONCURRENCY", os.environ.get("GUNICORN_WORKERS", "1")))
+    if _redis_client is None and worker_count > 1:
+        log.warning(
+            "⚠️  SECURITY: Running %d workers without Redis. Rate limiting is per-process "
+            "and can be bypassed by sending requests across workers. "
+            "Set RATE_LIMIT_REDIS_URL in your .env to fix this.", worker_count
+        )
+
+    # Warn loudly if the default admin password is still in use outside demo mode
+    deployment_mode = os.environ.get("DEPLOYMENT_MODE", "selfhosted")
+    admin_pass = os.environ.get("ADMIN_PASSWORD", "admin")
+    if admin_pass == "admin" and deployment_mode != "demo":
+        log.warning(
+            "⚠️  SECURITY: Default admin password 'admin' is still in use. "
+            "Set ADMIN_PASSWORD in your .env to a strong password immediately."
+        )
 
 
 def _seed(db):

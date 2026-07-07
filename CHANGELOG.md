@@ -7,10 +7,127 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+- **Cross-tenant employee write access blocked** *(CRITICAL)* — `PUT /api/employees/{id}` and `DELETE /api/employees/{id}` were missing the `tenant_id` isolation check, allowing any authenticated user to modify or delete employees from any tenant. Both endpoints now return 404 for resources outside the requesting tenant.
+- **Cross-tenant saved-filter delete blocked** *(MEDIUM)* — `DELETE /api/saved-filters/{id}` checked `user_id` but not `tenant_id`, allowing a user to delete filters belonging to the same user ID on a different tenant. The endpoint now enforces both checks.
+- **Custom field values scoped to tenant** *(MEDIUM)* — `get_custom_field_values()` helper now filters out field definitions that do not belong to the requesting tenant, preventing data from one tenant's custom fields from appearing in another tenant's asset responses. All three call sites (`GET /custom-fields/values/{id}`, `PUT /custom-fields/values/{id}`, asset detail) pass `tenant_id` explicitly.
+- **10 cross-tenant isolation tests added** — `tests/test_tenant_isolation.py` covers employee update/delete, saved-filter delete, and custom-field read/write across two isolated tenants.
+- **Invite tokens hashed** — invite tokens are now stored as SHA-256 hashes in the database. A DB leak no longer exposes usable invite links. Existing plaintext `token` column is migrated to `token_hash` automatically on startup.
+- **Password reset endpoint hardened** — `GET /api/auth/reset-password/{token}` no longer returns the user's name and email in the response, preventing information disclosure if a token is intercepted.
+- **Default password warning** — startup now logs a loud warning if `ADMIN_PASSWORD` is still set to the default value `admin` (outside of demo mode).
+- **Multi-worker rate limit warning** — startup now logs a warning if more than one worker is detected without Redis configured, as in-memory rate limiting is per-process and can be bypassed across workers.
+
 ### Fixed
+- **Duplicate backup loop** — `main.py` lifespan was starting a second `backup_loop()` task in addition to the one already managed by `scheduler.py`. Removed the duplicate; `scheduler.py` is now the sole owner of the backup loop.
+- **Hardcoded version** — `GET /api/admin/status` and `GET /api/health` now read the version from the FastAPI app object (`app.version`) instead of a hardcoded `"1.0.0"` string.
+- **Preview token wrong role** — the MSP tenant-preview user is now created with the `client_admin` role (falling back to the first non-MSP role if `client_admin` doesn't exist), instead of whatever non-MSP role happened to appear first in the DB (often `client_viewer`).
+- **Activity feed pagination correctness** — `GET /api/assets/activity` now counts `total` from the database (separate `COUNT` queries on `CheckoutLog` and `AuditLog`) and fetches only a bounded window of rows from each source before merging, so pagination and totals are correct at scale rather than loading all rows into Python first.
 - **Schema migrations** — `init_db()` now runs `ALTER TABLE … ADD COLUMN IF NOT EXISTS` for every column added after the initial release. Existing MariaDB/PostgreSQL installs that pre-date a model change will have the missing columns added automatically on the next startup rather than crashing with `Unknown column` errors. SQLite uses a `try/except` fallback (no `IF NOT EXISTS` support). Covers the `email_from_*` columns on `tenants` and `useful_life_years`/`salvage_value` on `assets`.
 
 ### Added
+### Changed / Improved
+- **Pagination on employees, categories, locations** — `GET /api/employees`, `/api/categories`, `/api/locations` now return `{items, total, limit, offset}` (default limit 200, max 1000); `q` search param added to employees. Frontend and all tests updated.
+- **Structured logging** — set `LOG_FORMAT=json` to emit machine-readable JSON log lines (`ts`, `level`, `logger`, `msg`); defaults to text. `RequestLoggingMiddleware` emits one access-log entry per request (JSON in json mode, debug-level text otherwise).
+- **Preview user cleanup** — `__preview@*` users older than 24 h are deleted daily at 03:00 UTC by the scheduler, preventing unbounded accumulation.
+
+### Added
+- **Webhook outbound events** — per-tenant webhook for PSA/integration use
+  - Configure `webhook_url` and `webhook_secret` in tenant settings (UI + API)
+  - Events fired: `asset.created`, `asset.updated`, `asset.deleted`, `request.status_changed`, `warranty.expiring`
+  - Each POST is signed with HMAC-SHA256: `X-Tether-Signature: sha256=<hex>` using the tenant's secret
+  - Up to 3 retries with exponential back-off; failures are logged but never block the main request
+  - `webhook_service.py` — standalone delivery module with no external dependencies
+  - 8 tests (settings save/clear, fire no-op, signed POST, graceful failure, asset create fires webhook)
+- **Asset maintenance scheduling** — schedule and track maintenance tasks per asset
+  - `POST /api/assets/{id}/maintenance` — create a scheduled maintenance task (title, type, due date, assignee, notes)
+  - `GET /api/assets/{id}/maintenance` — list maintenance tasks; auto-marks overdue tasks on each read
+  - `PATCH /api/assets/{id}/maintenance/{mid}/complete` — mark complete
+  - `DELETE /api/assets/{id}/maintenance/{mid}` — delete
+  - Dashboard now shows overdue maintenance count badge and upcoming maintenance panel
+  - Scheduler sends daily reminder emails at 07:00 UTC for tasks due within 3 days (configurable via `MAINTENANCE_ALERT_DAYS`; disable with `MAINTENANCE_ALERTS_ENABLED=false`)
+  - 6 tests (create, list, complete, overdue auto-status, delete, auth) + dashboard shape updated
+- **Asset photo upload** — attach photos to assets
+  - `POST /api/assets/{id}/photos` — multipart upload (JPEG, PNG, GIF, WebP, max 10 MB); photos stored in `data/uploads/` and served at `/uploads/<filename>`
+  - `GET /api/assets/{id}/photos` — list photos with URL and timestamp
+  - `DELETE /api/assets/{id}/photos/{photo_id}` — delete photo and file
+  - Photos panel added to asset detail page with thumbnail grid and delete buttons
+  - 5 tests (upload, list, delete, file-type rejection, auth)
+- **Keyboard shortcuts** — global keyboard handler: `n` opens the new asset form, `/` focuses search, `?` shows a shortcut help overlay, `Esc` closes any open dialog; "Shortcuts" button added to sidebar footer
+- **Activity feed date range filter** — `GET /api/assets/activity` now accepts `date_from` and `date_to` query params (ISO 8601 date strings); date pickers added to the Activity Feed toolbar in the frontend; 4 tests (excludes older/future events, includes today, invalid date ignored gracefully)
+- **Depreciation schedule export** — year-by-year book value breakdown per asset
+  - `GET /api/reports/depreciation/schedule/{id}` — JSON schedule with year, year_end, annual depreciation, accumulated depreciation, book value
+  - `GET /api/reports/depreciation/schedule/{id}/export` — CSV download of the same data
+  - "Schedule" download button added to the Depreciation panel on the asset detail page
+  - 5 tests (correct row count, decreasing book value, CSV export, 404, auth)
+- **Public asset check-in page** — generate a single-use, 7-day link per asset that lets an employee self-check-in without logging in
+  - `POST /api/assets/{id}/checkin-token` — generates (and invalidates any previous unused) check-in token; requires `assets.edit`
+  - `GET /api/assets/public/checkin/{token}` — shows asset info (no auth)
+  - `POST /api/assets/public/checkin/{token}` — checks the asset in, marks token used; returns 410 if already used or expired
+  - "Self-service link" button in the QR Label panel on the asset detail page; modal shows the URL with a Copy button
+  - `/checkin/<token>` frontend route shows a branded confirmation screen
+  - 5 tests (token generation, info fetch, used/expired enforcement, auth)
+- **Tenant onboarding wizard** — 3-step setup modal appears automatically after creating a new client tenant
+  - Step 1: invite the first user (sends an invite email; skippable)
+  - Step 2: add extra asset categories beyond the defaults (skippable)
+  - Step 3: completion screen with a "Open Client Portal" shortcut
+  - Progress indicators shown at the top of each step
+- **Asset notes history** — append-only timestamped notes log on each asset; notes show author name, date, and a delete button; replaces the single-overwrite notes field for structured history
+  - `GET /api/assets/{id}/notes` — list notes (newest first)
+  - `POST /api/assets/{id}/notes` — append a note (requires `assets.edit`)
+  - `DELETE /api/assets/{id}/notes/{note_id}` — delete a note (requires `assets.edit`, tenant-scoped)
+  - Notes panel on asset detail page with add-note textarea and delete buttons
+  - 6 tests (CRUD, cross-tenant isolation, auth)
+- **Saved search / filters** — save the current asset list filter combination as a named view; re-apply it from a dropdown in one click; per-user scoped; deletable
+  - `GET /api/saved-filters` — list this user's saved views for the current tenant
+  - `POST /api/saved-filters` — create a named view with `{name, filters}` payload
+  - `DELETE /api/saved-filters/{id}` — delete own filter (404 if not owner)
+  - "Save View" button in asset toolbar + "Saved views…" dropdown when any views exist
+  - 5 tests (CRUD, user scoping, auth)
+- **Tenant-level user groups / departments** — department filter on the asset list; departments endpoint for dropdown population
+  - `GET /api/employees/departments` — distinct non-empty department values for the tenant
+  - `GET /api/assets?department=Engineering` — filters to assets assigned to people in that department
+  - Asset list shows a Department dropdown when any employees have departments set
+  - 5 tests (distinct values, empty exclusion, asset filter, auth)
+- **Asset age report** — new Reports sub-page showing assets by age bracket (0–1yr, 1–3yr, 3–5yr, 5yr+) with expandable asset lists per bracket and CSV export
+  - `GET /api/reports/age` — returns bracket counts and asset details
+  - `GET /api/reports/age/export` — CSV with asset_tag, name, purchase_date, age_years, bracket, status, category, tenant
+  - 4 tests
+- **Per-tenant asset tag prefix** — configure a prefix (e.g. `ACME-`) in Settings; new asset form pre-populates the tag field with the prefix; prefix is uppercased and stored on the tenant; 4 tests
+- **Bulk reassign employee** — when an employee still has assets, a "Reassign" button (shuffle icon) appears; opens a modal to bulk-move all their assets to another person or set to unassigned/available before deletion
+  - `POST /api/employees/{id}/reassign` — moves all assets to `to_employee_id` (or unassigns if `null`); 5 tests including cross-tenant isolation
+  - Delete endpoint error message now hints at the reassign endpoint
+- **Dark mode** — CSS variable-based dark/light toggle in the sidebar footer; state persisted in `localStorage`; all main-content surfaces (`--bg`, `--surface`, `--border`, `--text` family) respond to the `data-theme="dark"` attribute on `<html>`
+- **Bulk import preview/diff** — CSV import now has a two-step flow: click **Preview** to see exactly what would be created, updated, or rejected before anything is written; click **Confirm Import** to commit
+  - `POST /api/assets/import/csv/preview` — returns `{creates, updates, errors, new_cf_defs, summary}` without touching the DB; each update row lists which fields would change and their before/after values
+  - New custom-field columns are flagged in the preview so users know new field definitions will be auto-created
+  - 7 tests (create detection, update detection with diff, error reporting, no-commit guarantee, auth)
+- **Asset assignment history on employee profile** — click any person in the People list (or the new clock icon) to open a history modal showing all assets ever checked out to them, with action, date, and a "Current" badge for still-assigned items; clicking an asset tag navigates directly to that asset
+  - `GET /api/employees/{id}/history` — returns `{employee, history[]}` with `currently_assigned` flag; fully tenant-scoped; 5 tests
+- **Licence expiry email alerts** — daily scheduler job that emails MSP admins about software licences expiring within a configurable window
+  - Runs daily at 09:00 UTC (offset from warranty alerts)
+  - Configurable via `LICENCE_ALERTS_ENABLED` (default `true`) and `LICENCE_ALERT_DAYS` (default 30)
+  - `POST /api/admin/alerts/licence` — manual trigger (MSP admin only)
+  - `/api/admin/status` now includes `licence_alerts` and `licence_window_days` in the services section
+  - 3 tests
+- **MSP dashboard per-client drill-down** — click any client row in the MSP dashboard to expand an inline panel with full tenant stats (assets, value, expiring warranties, recent activity) without navigating away; quick-action buttons to "Open as client" (preview token) or "Switch to tenant"
+  - `GET /api/dashboard/client/{tenant_id}` — full tenant stats for MSP staff (requires `msp.dashboard`); 4 tests
+- **Asset label/tag printing** — select assets in bulk and print QR label stickers
+  - `POST /api/assets/labels` — returns a print-ready HTML page with QR codes for selected assets; three size options (small/4×4, medium/3×3, large/2×2 per row)
+  - Labels include asset tag and name; browser print dialog or "Save as PDF" produces the final output (no server-side PDF dependency)
+  - "Print Labels" button added to the bulk-select toolbar in the asset list
+  - 6 tests including cross-tenant isolation
+- **Two-factor authentication (TOTP)** — optional authenticator-app 2FA for MSP accounts
+  - `UserTotp` model stores a per-user TOTP secret; table created automatically on startup
+  - `POST /api/auth/totp/setup` — generate secret + QR code SVG (ready to scan in any TOTP app)
+  - `POST /api/auth/totp/verify` — confirm first code to activate 2FA
+  - `GET  /api/auth/totp/status` — returns `{enabled: true/false}`
+  - `DELETE /api/auth/totp` — disable 2FA; requires current password
+  - Login flow: when 2FA is active, `/api/auth/login` returns `{totp_required: true, totp_token: "..."}` (5-minute challenge token, not a session); `POST /api/auth/totp/authenticate` exchanges it + code for the full JWT
+  - Rate limited: 10 bad TOTP codes per IP per 5 minutes
+  - Client users cannot enable 2FA (MSP accounts only)
+  - Settings page TOTP panel: scan QR, verify code, disable with password confirmation
+  - Login page intercepts the TOTP challenge and shows a code-entry screen before completing login
+  - 13 tests in `tests/test_totp.py`
 - **Custom fields** — per-tenant key/value fields for assets (IMEI, VLAN, licence key, department code, etc.)
   - `CustomFieldDef` and `CustomFieldValue` models with cascade-delete
   - `GET/POST/PUT/DELETE /api/custom-fields/defs` — field definition management (requires `categories.manage`)

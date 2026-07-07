@@ -47,7 +47,12 @@ async function login(email, password) {
     try { msg = (await res.json()).detail || msg; } catch (_) {}
     throw new Error(msg);
   }
-  State.token = (await res.json()).access_token;
+  const data = await res.json();
+  if (data.totp_required) {
+    renderTotpChallenge(data.totp_token);
+    return;
+  }
+  State.token = data.access_token;
   localStorage.setItem('tt_token', State.token);
   await boot();
 }
@@ -253,7 +258,18 @@ async function loginAsDemo(role) {
   catch (err) { toast(err.message, 'err'); if (btn) { btn.disabled = false; btn.textContent = role === 'msp' ? 'MSP Admin' : 'Client User'; } }
 }
 
+function applyDarkMode() {
+  const dark = localStorage.getItem('tt_dark') === '1';
+  document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+}
+function toggleDarkMode() {
+  const next = localStorage.getItem('tt_dark') !== '1';
+  localStorage.setItem('tt_dark', next ? '1' : '0');
+  applyDarkMode();
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
+  applyDarkMode();
   await fetchBranding();
 
   // Consume a preview token from the URL (set by previewAsClient()).
@@ -292,5 +308,61 @@ document.addEventListener('DOMContentLoaded', async () => {
     renderInviteAccept(token);
     return;
   }
+
+  // Public asset check-in page: /checkin/<token>
+  if (path.startsWith('/checkin/')) {
+    const token = path.split('/checkin/')[1];
+    renderPublicCheckin(token);
+    return;
+  }
   if (State.token) boot(); else renderLogin();
 });
+
+document.addEventListener('keydown', e => {
+  if (!State.token) return;
+  // Ignore shortcuts when typing in inputs, textareas, selects, or modals with open inputs
+  const tag = (e.target.tagName || '').toLowerCase();
+  if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.target.isContentEditable) return;
+  // Ignore if a modal is open and focused
+  if (document.querySelector('#modal-root [role="dialog"], #modal-root .modal-wrap')) return;
+
+  if (e.key === 'n' && !e.ctrlKey && !e.metaKey) {
+    e.preventDefault();
+    if (typeof openAssetForm === 'function') openAssetForm();
+  } else if (e.key === '/' && !e.ctrlKey && !e.metaKey) {
+    e.preventDefault();
+    const si = document.querySelector('#global-search, .search input, input[type="search"]');
+    if (si) { si.focus(); si.select(); }
+  } else if (e.key === '?') {
+    e.preventDefault();
+    _showShortcutHelp();
+  } else if (e.key === 'Escape') {
+    closeModal();
+  }
+});
+
+function _showShortcutHelp() {
+  openModal(`
+    <div style="padding:8px 0">
+      <h3 style="margin:0 0 20px;font-size:16px">Keyboard shortcuts</h3>
+      <table style="border-collapse:collapse;width:100%;font-size:14px">
+        ${[
+          ['n',   'New asset'],
+          ['/',   'Focus search'],
+          ['?',   'Show this help'],
+          ['Esc', 'Close dialog'],
+        ].map(([k, d]) => `
+          <tr>
+            <td style="padding:7px 16px 7px 0;white-space:nowrap">
+              <kbd style="display:inline-block;padding:2px 8px;border:1px solid var(--border);
+                          border-radius:4px;background:var(--surface);font-family:monospace;
+                          font-size:13px;color:var(--text)">${k}</kbd>
+            </td>
+            <td style="padding:7px 0;color:var(--text-muted)">${d}</td>
+          </tr>`).join('')}
+      </table>
+      <div style="text-align:right;margin-top:20px">
+        <button class="btn" onclick="closeModal()">Close</button>
+      </div>
+    </div>`);
+}

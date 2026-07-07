@@ -294,6 +294,175 @@ def depreciation_export(
     )
 
 
+@router.get("/depreciation/schedule/{asset_id}")
+def depreciation_schedule(
+    asset_id: int,
+    db: Session = Depends(get_db),
+    cu: CurrentUser = Depends(get_current_user),
+    tenant_id: Optional[int] = Depends(get_tenant_id),
+):
+    """Year-by-year depreciation schedule for a single asset."""
+    cu.require("reports.view")
+    from routers.assets import calculate_depreciation
+    a = _asset_query(db, tenant_id).filter(Asset.id == asset_id).first()
+    if not a:
+        from fastapi import HTTPException
+        raise HTTPException(404, "Asset not found")
+    dep = calculate_depreciation(a)
+    if not dep:
+        from fastapi import HTTPException
+        raise HTTPException(400, "Asset has insufficient depreciation data")
+
+    salvage = a.salvage_value or 0.0
+    depreciable = a.purchase_cost - salvage
+    annual = dep["annual_depreciation"]
+    rows = []
+    for yr in range(1, a.useful_life_years + 1):
+        book_value = max(round(a.purchase_cost - annual * yr, 2), salvage)
+        accumulated = min(round(annual * yr, 2), depreciable)
+        try:
+            yr_end = date(a.purchase_date.year + yr, a.purchase_date.month, a.purchase_date.day)
+        except ValueError:
+            yr_end = date(a.purchase_date.year + yr, 3, 1)
+        rows.append({
+            "year":              yr,
+            "year_end":          yr_end.isoformat(),
+            "annual_depreciation": annual,
+            "accumulated_depreciation": accumulated,
+            "book_value":        book_value,
+            "fully_depreciated": yr >= a.useful_life_years,
+        })
+    return {
+        "asset_tag":     a.asset_tag,
+        "asset_name":    a.name,
+        "purchase_cost": a.purchase_cost,
+        "salvage_value": salvage,
+        "useful_life_years": a.useful_life_years,
+        "purchase_date": a.purchase_date.isoformat(),
+        "schedule":      rows,
+    }
+
+
+@router.get("/depreciation/schedule/{asset_id}/export")
+def depreciation_schedule_export(
+    asset_id: int,
+    db: Session = Depends(get_db),
+    cu: CurrentUser = Depends(get_current_user),
+    tenant_id: Optional[int] = Depends(get_tenant_id),
+):
+    cu.require("reports.view")
+    from routers.assets import calculate_depreciation
+    from fastapi import HTTPException
+    a = _asset_query(db, tenant_id).filter(Asset.id == asset_id).first()
+    if not a:
+        raise HTTPException(404, "Asset not found")
+    dep = calculate_depreciation(a)
+    if not dep:
+        raise HTTPException(400, "Asset has insufficient depreciation data")
+
+    salvage = a.salvage_value or 0.0
+    depreciable = a.purchase_cost - salvage
+    annual = dep["annual_depreciation"]
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["year", "year_end", "annual_depreciation",
+                     "accumulated_depreciation", "book_value", "fully_depreciated"])
+    for yr in range(1, a.useful_life_years + 1):
+        book_value = max(round(a.purchase_cost - annual * yr, 2), salvage)
+        accumulated = min(round(annual * yr, 2), depreciable)
+        try:
+            yr_end = date(a.purchase_date.year + yr, a.purchase_date.month, a.purchase_date.day)
+        except ValueError:
+            yr_end = date(a.purchase_date.year + yr, 3, 1)
+        writer.writerow([yr, yr_end.isoformat(), annual, accumulated, book_value, yr >= a.useful_life_years])
+    output.seek(0)
+    fname = f"tether-depreciation-{a.asset_tag}-{date.today().isoformat()}.csv"
+    return StreamingResponse(
+        iter([output.getvalue()]), media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={fname}"},
+    )
+
+
+_AGE_BRACKETS = [
+    ("0–1 yr",  0,   1),
+    ("1–3 yr",  1,   3),
+    ("3–5 yr",  3,   5),
+    ("5+ yr",   5, None),
+]
+
+
+@router.get("/age")
+def age_report(
+    db: Session = Depends(get_db),
+    cu: CurrentUser = Depends(get_current_user),
+    tenant_id: Optional[int] = Depends(get_tenant_id),
+):
+    cu.require("reports.view")
+    today = date.today()
+
+    assets = _asset_query(db, tenant_id).filter(Asset.purchase_date.isnot(None)).all()
+    assets_no_date = _asset_query(db, tenant_id).filter(Asset.purchase_date.is_(None)).count()
+
+    brackets = {label: [] for label, _, _ in _AGE_BRACKETS}
+    for a in assets:
+        age_years = (today - a.purchase_date).days / 365.25
+        for label, lo, hi in _AGE_BRACKETS:
+            if age_years >= lo and (hi is None or age_years < hi):
+                brackets[label].append({
+                    "id":           a.id,
+                    "asset_tag":    a.asset_tag,
+                    "name":         a.name,
+                    "purchase_date": a.purchase_date.isoformat(),
+                    "age_years":    round(age_years, 1),
+                    "status":       a.status,
+                    "category":     a.category.name if a.category else "",
+                    "tenant":       a.tenant.name if a.tenant else "",
+                })
+                break
+
+    return {
+        "brackets": [
+            {"label": label, "count": len(brackets[label]), "assets": brackets[label]}
+            for label, _, _ in _AGE_BRACKETS
+        ],
+        "no_purchase_date": assets_no_date,
+        "total": len(assets) + assets_no_date,
+    }
+
+
+@router.get("/age/export")
+def age_report_export(
+    db: Session = Depends(get_db),
+    cu: CurrentUser = Depends(get_current_user),
+    tenant_id: Optional[int] = Depends(get_tenant_id),
+):
+    cu.require("reports.view")
+    today = date.today()
+    assets = _asset_query(db, tenant_id).filter(Asset.purchase_date.isnot(None)).all()
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["asset_tag", "name", "purchase_date", "age_years",
+                     "age_bracket", "status", "category", "tenant"])
+    for a in assets:
+        age_years = (today - a.purchase_date).days / 365.25
+        bracket = next(
+            label for label, lo, hi in _AGE_BRACKETS
+            if age_years >= lo and (hi is None or age_years < hi)
+        )
+        writer.writerow([
+            a.asset_tag, a.name,
+            a.purchase_date.isoformat(), round(age_years, 1),
+            bracket, a.status,
+            a.category.name if a.category else "",
+            a.tenant.name if a.tenant else "",
+        ])
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]), media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=tether-report-age-{today.isoformat()}.csv"},
+    )
+
+
 @router.get("/export")
 def export_report(
     report_type: str = Query("assets", regex="^(warranty|assets|value)$"),

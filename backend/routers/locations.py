@@ -1,5 +1,5 @@
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from db.database import get_db
 from models.models import Location
@@ -11,12 +11,20 @@ router = APIRouter()
 def _out(l): return {"id":l.id,"name":l.name,"address":l.address,"asset_count":len(l.assets)}
 
 @router.get("")
-def list_locations(db: Session = Depends(get_db), cu: CurrentUser = Depends(get_current_user),
-                   tenant_id: Optional[int] = Depends(get_tenant_id)):
+def list_locations(
+    db: Session = Depends(get_db),
+    cu: CurrentUser = Depends(get_current_user),
+    tenant_id: Optional[int] = Depends(get_tenant_id),
+    limit: int = Query(200, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+):
     cu.require("assets.view")
     q = db.query(Location)
-    if tenant_id is not None: q = q.filter(Location.tenant_id == tenant_id)
-    return [_out(l) for l in q.order_by(Location.name).all()]
+    if tenant_id is not None:
+        q = q.filter(Location.tenant_id == tenant_id)
+    total = q.count()
+    items = q.order_by(Location.name).offset(offset).limit(limit).all()
+    return {"items": [_out(l) for l in items], "total": total, "limit": limit, "offset": offset}
 
 @router.post("")
 def create(body: LocationIn, db: Session = Depends(get_db), cu: CurrentUser = Depends(get_current_user),

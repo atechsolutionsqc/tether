@@ -49,14 +49,17 @@ class TestListCategories:
     def test_list_returns_list(self, client, tenant_headers):
         r = client.get("/api/categories", headers=tenant_headers)
         assert r.status_code == 200
-        assert isinstance(r.json(), list)
+        data = r.json()
+        assert "items" in data
+        assert "total" in data
+        assert isinstance(data["items"], list)
 
     def test_created_category_appears(self, client, tenant_headers):
         name = _name()
         client.post("/api/categories", json={"name": name}, headers=tenant_headers)
         r = client.get("/api/categories", headers=tenant_headers)
         assert r.status_code == 200
-        names = [c["name"] for c in r.json()]
+        names = [c["name"] for c in r.json()["items"]]
         assert name in names
 
     def test_requires_authentication(self, client, tenant):

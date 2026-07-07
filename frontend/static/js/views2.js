@@ -1,13 +1,17 @@
 // ============ ASSETS LIST ============
-const AssetFilters = { q: '', status: '', category_id: '', location_id: '', sort: 'asset_tag', order: 'asc', page: 1 };
+const AssetFilters = { q: '', status: '', category_id: '', location_id: '', department: '', sort: 'asset_tag', order: 'asc', page: 1 };
 let _lookups = { categories: [], locations: [], employees: [] };
 let selectedAssetIds = new Set();
 
 async function loadLookups() {
-  const [categories, locations, employees] = await Promise.all([
+  const [cats, locs, emps] = await Promise.all([
     api('/categories'), api('/locations'), api('/employees'),
   ]);
-  _lookups = { categories, locations, employees };
+  _lookups = {
+    categories: cats.items ?? cats,
+    locations:  locs.items ?? locs,
+    employees:  emps.items ?? emps,
+  };
 }
 
 async function pageAssets() {
@@ -21,12 +25,21 @@ async function pageAssets() {
 
   const catOpts = _lookups.categories.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
   const locOpts = _lookups.locations.map(l => `<option value="${l.id}">${esc(l.name)}</option>`).join('');
+  let depts = [];
+  try { depts = await api('/employees/departments'); } catch (_) {}
+  const deptOpts = depts.map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join('');
+  let savedViews = [];
+  try { savedViews = await api('/saved-filters'); } catch (_) {}
+  const savedViewOpts = savedViews.map(v => `<option value="${v.id}">${esc(v.name)}</option>`).join('');
   page.innerHTML = pageHeader('Assets', null, actions) + `
     <div class="toolbar">
       <div class="search">${icon('search', 17)}<input id="f-q" placeholder="Search by tag, name, serial, model…" value="${esc(AssetFilters.q)}"></div>
       <select class="filter" id="f-status"><option value="">All statuses</option>${STATUSES.map(s => `<option value="${s}">${s[0].toUpperCase() + s.slice(1)}</option>`).join('')}</select>
       <select class="filter" id="f-cat"><option value="">All categories</option>${catOpts}</select>
       <select class="filter" id="f-loc"><option value="">All locations</option>${locOpts}</select>
+      ${deptOpts ? `<select class="filter" id="f-dept"><option value="">All departments</option>${deptOpts}</select>` : ''}
+      <button class="btn btn-ghost btn-sm" onclick="openSaveFilterModal()" title="Save current filters as a named view">${icon('bookmark', 14)} Save View</button>
+      ${savedViewOpts ? `<select class="filter" id="f-saved" style="max-width:160px" onchange="loadSavedFilter(this.value, ${JSON.stringify(savedViews)})"><option value="">Saved views…</option>${savedViewOpts}</select>` : ''}
     </div>
     <div id="asset-table">${loading()}</div>`;
 
@@ -38,6 +51,10 @@ async function pageAssets() {
   document.getElementById('f-status').onchange = (e) => { AssetFilters.status = e.target.value; AssetFilters.page = 1; selectedAssetIds.clear(); loadAssetTable(); };
   document.getElementById('f-cat').onchange = (e) => { AssetFilters.category_id = e.target.value; AssetFilters.page = 1; selectedAssetIds.clear(); loadAssetTable(); };
   document.getElementById('f-loc').onchange = (e) => { AssetFilters.location_id = e.target.value; AssetFilters.page = 1; selectedAssetIds.clear(); loadAssetTable(); };
+  if (document.getElementById('f-dept')) {
+    document.getElementById('f-dept').value = AssetFilters.department;
+    document.getElementById('f-dept').onchange = (e) => { AssetFilters.department = e.target.value; AssetFilters.page = 1; selectedAssetIds.clear(); loadAssetTable(); };
+  }
   loadAssetTable();
 }
 
@@ -47,6 +64,53 @@ function sortBy(col) {
   AssetFilters.page = 1;
   selectedAssetIds.clear();
   loadAssetTable();
+}
+
+async function openSaveFilterModal() {
+  openModal(`
+    <div class="modal-head"><h2>Save View</h2><button class="x-btn" onclick="closeModal()">✕</button></div>
+    <div class="modal-body">
+      <p class="muted" style="margin-bottom:14px">Save the current filters as a named view so you can re-apply them quickly.</p>
+      <div class="field"><label>View name</label><input id="save-view-name" placeholder="e.g. Deployed Laptops – Head Office" autofocus></div>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      <button type="button" class="btn btn-primary" onclick="doSaveFilter()">Save</button>
+    </div>`);
+}
+
+async function doSaveFilter() {
+  const name = (document.getElementById('save-view-name')?.value || '').trim();
+  if (!name) return toast('Enter a name for this view', 'err');
+  const filters = {
+    q:           AssetFilters.q           || undefined,
+    status:      AssetFilters.status      || undefined,
+    category_id: AssetFilters.category_id || undefined,
+    location_id: AssetFilters.location_id || undefined,
+    department:  AssetFilters.department  || undefined,
+  };
+  Object.keys(filters).forEach(k => filters[k] === undefined && delete filters[k]);
+  try {
+    await api('/saved-filters', { method: 'POST', json: { name, filters } });
+    closeModal();
+    toast('View saved');
+    loadAssets();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+function loadSavedFilter(id, views) {
+  if (!id) return;
+  const view = views.find(v => String(v.id) === String(id));
+  if (!view) return;
+  const f = view.filters || {};
+  AssetFilters.q           = f.q           || '';
+  AssetFilters.status      = f.status      || '';
+  AssetFilters.category_id = f.category_id || '';
+  AssetFilters.location_id = f.location_id || '';
+  AssetFilters.department  = f.department  || '';
+  AssetFilters.page        = 1;
+  selectedAssetIds.clear();
+  loadAssets();
 }
 
 function goPrevPage() { if (AssetFilters.page > 1) { AssetFilters.page--; selectedAssetIds.clear(); loadAssetTable(); } }
@@ -126,6 +190,7 @@ async function loadAssetTable() {
         </div>
       </div>
       ${can('assets.delete') ? `<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="_bulkDelete()">Delete</button>` : ''}
+      <button class="btn btn-ghost btn-sm" onclick="_printLabels()">Print Labels</button>
       <button class="btn btn-ghost btn-sm" onclick="_clearBulkSelection()">Clear</button>
     </div>`;
 
@@ -235,6 +300,46 @@ async function _bulkDelete() {
   } catch(e) { toast(e.message, 'err'); }
 }
 
+function _printLabels() {
+  const ids = [...selectedAssetIds];
+  if (!ids.length) return;
+  openModal(`
+    <h3 style="margin-bottom:16px">Print Labels</h3>
+    <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">
+      ${ids.length} asset${ids.length !== 1 ? 's' : ''} selected. Choose a label size, then print or save as PDF from the browser.
+    </p>
+    <div class="field"><label>Label size</label>
+      <select id="label-size">
+        <option value="small">Small (5 per row)</option>
+        <option value="medium" selected>Medium (4 per row)</option>
+        <option value="large">Large (3 per row)</option>
+      </select>
+    </div>
+    <div style="display:flex;gap:10px;margin-top:18px">
+      <button class="btn btn-primary" id="label-print-btn">Open Print Page</button>
+      <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+    </div>`, false);
+
+  document.getElementById('label-print-btn').onclick = async () => {
+    const btn = document.getElementById('label-print-btn');
+    btn.disabled = true; btn.textContent = 'Generating…';
+    const size = document.getElementById('label-size').value;
+    try {
+      const res = await fetch('/api/assets/labels', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${State.token}` },
+        body: JSON.stringify({ asset_ids: ids, size }),
+      });
+      if (!res.ok) { const e = await res.json().catch(()=>{}); throw new Error(e?.detail || 'Failed'); }
+      const html = await res.text();
+      const w = window.open('', '_blank');
+      w.document.write(html);
+      w.document.close();
+      closeModal();
+    } catch(e) { toast(e.message, 'err'); btn.disabled = false; btn.textContent = 'Open Print Page'; }
+  };
+}
+
 // ============ ASSET FORM ============
 async function openAssetForm(id = null) {
   if (!_lookups.categories.length) await loadLookups();
@@ -271,7 +376,7 @@ async function openAssetForm(id = null) {
     <div class="modal-head"><h2>${id ? 'Edit Asset' : 'New Asset'}</h2><button class="x-btn" onclick="closeModal()">✕</button></div>
     <form id="asset-form"><div class="modal-body">
       <div class="field-row">
-        <div class="field"><label>Asset Tag *</label><input name="asset_tag" value="${esc(a.asset_tag)}" placeholder="IT-0001" required></div>
+        <div class="field"><label>Asset Tag *</label><input name="asset_tag" value="${esc(a.asset_tag) || (id ? '' : esc(State.settings?.asset_tag_prefix || ''))}" placeholder="${esc((State.settings?.asset_tag_prefix || '') + '0001')}" required></div>
         <div class="field"><label>Status</label><select name="status">${STATUSES.map(s => `<option value="${s}" ${a.status === s ? 'selected' : ''}>${s[0].toUpperCase() + s.slice(1)}</option>`).join('')}</select></div>
       </div>
       <div class="field"><label>Name *</label><input name="name" value="${esc(a.name)}" placeholder="Dell Latitude 7440" required></div>
@@ -341,9 +446,14 @@ async function openAssetForm(id = null) {
 async function pageAssetDetail() {
   const page = document.getElementById('page');
   page.innerHTML = loading();
-  let a, history;
-  try { [a, history] = await Promise.all([api('/assets/' + State.param), api('/assets/' + State.param + '/history')]); }
-  catch (e) { toast(e.message, 'err'); navigate('assets'); return; }
+  let a, history, notes;
+  try {
+    [a, history, notes] = await Promise.all([
+      api('/assets/' + State.param),
+      api('/assets/' + State.param + '/history'),
+      api('/assets/' + State.param + '/notes').catch(() => []),
+    ]);
+  } catch (e) { toast(e.message, 'err'); navigate('assets'); return; }
 
   const back = `<button class="btn btn-ghost btn-sm" onclick="navigate('assets')">${icon('back', 16)}Back</button>`;
   const checkAction = a.status === 'deployed'
@@ -386,6 +496,7 @@ async function pageAssetDetail() {
             <img id="asset-qr-img" alt="QR code">
             <p class="muted" style="margin-top:10px;font-size:12.5px">Encodes <span class="tag">${esc(a.asset_tag)}</span></p>
             <button class="btn btn-ghost btn-sm" style="margin-top:10px" onclick="downloadQr(${a.id}, '${esc(a.asset_tag)}')">${icon('download', 15)}Download</button>
+            ${can('assets.edit') ? `<button class="btn btn-ghost btn-sm" style="margin-top:6px" onclick="generateCheckinLink(${a.id})">${icon('link', 15)}Self-service link</button>` : ''}
           </div>
         </div>
         <div class="panel">
@@ -394,10 +505,222 @@ async function pageAssetDetail() {
         </div>
       </div>
     </div>
-    ${_renderDepreciationPanel(a.depreciation)}
-    ${cfPanel}`;
+    ${_renderDepreciationPanel(a.depreciation, a.id)}
+    ${cfPanel}
+    <div class="panel" style="margin-top:18px" id="photos-panel">
+      <div class="panel-head"><h3>${icon('image', 16)} Photos</h3>
+        ${can('assets.edit') ? `<label class="btn btn-ghost btn-sm" style="cursor:pointer">${icon('upload',14)} Add photo<input type="file" accept="image/*" style="display:none" onchange="_uploadAssetPhoto(${a.id},this)"></label>` : ''}
+      </div>
+      <div class="panel-body" id="photos-list">${loading()}</div>
+    </div>
+    <div class="panel" style="margin-top:18px" id="maintenance-panel">
+      <div class="panel-head"><h3>${icon('tool', 16)} Maintenance</h3>
+        ${can('assets.edit') ? `<button class="btn btn-ghost btn-sm" onclick="openMaintenanceForm(${a.id})">${icon('plus',14)} Schedule</button>` : ''}
+      </div>
+      <div class="panel-body" id="maintenance-list">${loading()}</div>
+    </div>
+    <div class="panel" style="margin-top:18px" id="notes-panel">
+      <div class="panel-head"><h3>${icon('edit', 16)} Notes Log</h3></div>
+      <div class="panel-body" id="notes-list">
+        ${_renderNotesList(notes)}
+      </div>
+      ${can('assets.edit') ? `
+      <div style="padding:0 20px 16px">
+        <div class="field" style="margin-bottom:8px">
+          <textarea id="note-input" rows="3" placeholder="Add a note…" style="width:100%;padding:9px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);color:var(--text);font-family:inherit;font-size:14px;resize:vertical"></textarea>
+        </div>
+        <button class="btn btn-primary btn-sm" onclick="addAssetNote(${a.id})">Add Note</button>
+      </div>` : ''}
+    </div>`;
 
   loadQrImage(a.id);
+  api(`/assets/${a.id}/photos`).then(photos => {
+    const el = document.getElementById('photos-list');
+    if (el) el.innerHTML = _renderPhotosList(photos, a.id);
+  }).catch(() => {});
+  api(`/assets/${a.id}/maintenance`).then(items => {
+    const el = document.getElementById('maintenance-list');
+    if (el) el.innerHTML = _renderMaintenanceList(items, a.id);
+  }).catch(() => {});
+}
+
+function _renderPhotosList(photos, assetId) {
+  if (!photos || !photos.length) {
+    return `<p class="muted" style="font-size:13.5px">No photos yet.</p>`;
+  }
+  return `<div style="display:flex;flex-wrap:wrap;gap:10px">${photos.map(p => `
+    <div style="position:relative">
+      <a href="${esc(p.url)}" target="_blank" rel="noopener">
+        <img src="${esc(p.url)}" alt="Asset photo"
+          style="width:120px;height:90px;object-fit:cover;border-radius:var(--radius-sm);border:1px solid var(--border);display:block">
+      </a>
+      ${can('assets.edit') ? `<button onclick="deleteAssetPhoto(${p.id},${assetId})"
+        style="position:absolute;top:4px;right:4px;background:rgba(0,0,0,0.55);border:none;
+               border-radius:50%;width:22px;height:22px;cursor:pointer;color:#fff;
+               display:flex;align-items:center;justify-content:center;padding:0"
+        title="Delete photo">${icon('x',12)}</button>` : ''}
+    </div>`).join('')}</div>`;
+}
+
+async function _uploadAssetPhoto(assetId, input) {
+  const file = input.files?.[0];
+  if (!file) return;
+  const fd = new FormData();
+  fd.append('file', file);
+  input.value = '';
+  try {
+    const r = await fetch(`/api/assets/${assetId}/photos`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${State.token}`, 'x-tenant': State.settings?.slug || '' },
+      body: fd,
+    });
+    if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || 'Upload failed'); }
+    const photos = await api(`/assets/${assetId}/photos`).catch(() => []);
+    const el = document.getElementById('photos-list');
+    if (el) el.innerHTML = _renderPhotosList(photos, assetId);
+    toast('Photo uploaded');
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function deleteAssetPhoto(photoId, assetId) {
+  if (!confirm('Delete this photo?')) return;
+  try {
+    await api(`/assets/${assetId}/photos/${photoId}`, { method: 'DELETE' });
+    const photos = await api(`/assets/${assetId}/photos`).catch(() => []);
+    const el = document.getElementById('photos-list');
+    if (el) el.innerHTML = _renderPhotosList(photos, assetId);
+    toast('Photo deleted');
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+const _MAINT_STATUS_COLOR = { scheduled: '#3b82f6', overdue: '#ef4444', done: '#22c55e' };
+
+function _renderMaintenanceList(items, assetId) {
+  if (!items || !items.length) {
+    return `<p class="muted" style="font-size:13.5px">No maintenance scheduled.</p>`;
+  }
+  return `<ul class="timeline">${items.map(m => {
+    const color = _MAINT_STATUS_COLOR[m.status] || '#6b7280';
+    const badge = `<span style="display:inline-block;padding:1px 8px;border-radius:12px;font-size:11px;font-weight:600;background:${color}18;color:${color}">${m.status}</span>`;
+    return `<li>
+      <div class="t-action">
+        <b>${esc(m.title)}</b> ${badge}
+        ${m.maintenance_type ? `<span class="muted" style="font-size:12px"> · ${esc(m.maintenance_type)}</span>` : ''}
+        <div class="muted" style="font-size:12px;margin-top:2px">Due: ${m.due_date}${m.assigned_to_name ? ` · ${esc(m.assigned_to_name)}` : ''}${m.notes ? ` · ${esc(m.notes)}` : ''}</div>
+      </div>
+      <div class="t-time">
+        ${can('assets.edit') && m.status !== 'done' ? `<button class="btn btn-ghost btn-sm" style="padding:2px 8px;font-size:11px" onclick="completeMaintenance(${m.id},${assetId})">${icon('check',12)} Done</button>` : ''}
+        ${can('assets.edit') ? `<button class="btn btn-ghost btn-sm" style="padding:2px 6px;font-size:11px;color:var(--red)" onclick="deleteMaintenance(${m.id},${assetId})">${icon('trash',12)}</button>` : ''}
+      </div>
+    </li>`;
+  }).join('')}</ul>`;
+}
+
+function openMaintenanceForm(assetId) {
+  openModal(`
+    <div class="modal-head"><h2>Schedule Maintenance</h2><button class="x-btn" onclick="closeModal()">✕</button></div>
+    <div class="modal-body">
+      <div class="field"><label>Title *</label><input id="maint-title" type="text" placeholder="e.g. Annual inspection"></div>
+      <div class="field"><label>Type</label><input id="maint-type" type="text" placeholder="e.g. Inspection, Repair, Cleaning"></div>
+      <div class="field"><label>Due date *</label><input id="maint-due" type="date"></div>
+      <div class="field"><label>Notes</label><textarea id="maint-notes" rows="2" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);color:var(--text)"></textarea></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="_submitMaintenance(${assetId})">Schedule</button>
+    </div>`);
+}
+
+async function _submitMaintenance(assetId) {
+  const title = document.getElementById('maint-title')?.value.trim();
+  const due   = document.getElementById('maint-due')?.value;
+  if (!title) return toast('Title is required', 'err');
+  if (!due)   return toast('Due date is required', 'err');
+  try {
+    await api(`/assets/${assetId}/maintenance`, { method: 'POST', json: {
+      title, maintenance_type: document.getElementById('maint-type')?.value.trim() || '',
+      due_date: due, notes: document.getElementById('maint-notes')?.value.trim() || '',
+    }});
+    closeModal();
+    const items = await api(`/assets/${assetId}/maintenance`).catch(() => []);
+    const el = document.getElementById('maintenance-list');
+    if (el) el.innerHTML = _renderMaintenanceList(items, assetId);
+    toast('Maintenance scheduled');
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function completeMaintenance(maintenanceId, assetId) {
+  try {
+    await api(`/assets/${assetId}/maintenance/${maintenanceId}/complete`, { method: 'PATCH' });
+    const items = await api(`/assets/${assetId}/maintenance`).catch(() => []);
+    const el = document.getElementById('maintenance-list');
+    if (el) el.innerHTML = _renderMaintenanceList(items, assetId);
+    toast('Marked as done');
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function deleteMaintenance(maintenanceId, assetId) {
+  if (!confirm('Delete this maintenance task?')) return;
+  try {
+    await api(`/assets/${assetId}/maintenance/${maintenanceId}`, { method: 'DELETE' });
+    const items = await api(`/assets/${assetId}/maintenance`).catch(() => []);
+    const el = document.getElementById('maintenance-list');
+    if (el) el.innerHTML = _renderMaintenanceList(items, assetId);
+    toast('Deleted');
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+function _renderNotesList(notes) {
+  if (!notes || !notes.length) return `<p class="muted" style="font-size:13.5px">No notes yet.</p>`;
+  return `<ul class="timeline">${notes.map(n => `
+    <li>
+      <div class="t-action" style="white-space:pre-wrap">${esc(n.body)}</div>
+      <div class="t-time">${esc(n.author_name)} · ${fmtDate(n.created_at)} · ${timeAgo(n.created_at)}
+        ${can('assets.edit') ? `<button class="btn btn-ghost btn-sm" style="padding:2px 6px;font-size:11px;margin-left:8px;color:var(--red)" onclick="deleteAssetNote(${n.id})">${icon('trash',12)}</button>` : ''}
+      </div>
+    </li>`).join('')}</ul>`;
+}
+
+async function addAssetNote(assetId) {
+  const input = document.getElementById('note-input');
+  const body = (input?.value || '').trim();
+  if (!body) return toast('Enter a note first', 'err');
+  try {
+    await api(`/assets/${assetId}/notes`, { method: 'POST', json: { body } });
+    input.value = '';
+    const updated = await api(`/assets/${assetId}/notes`).catch(() => []);
+    document.getElementById('notes-list').innerHTML = _renderNotesList(updated);
+    toast('Note added');
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function deleteAssetNote(noteId) {
+  if (!confirm('Delete this note?')) return;
+  const assetId = State.param;
+  try {
+    await api(`/assets/${assetId}/notes/${noteId}`, { method: 'DELETE' });
+    const updated = await api(`/assets/${assetId}/notes`).catch(() => []);
+    document.getElementById('notes-list').innerHTML = _renderNotesList(updated);
+    toast('Note deleted');
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function generateCheckinLink(assetId) {
+  try {
+    const r = await api(`/assets/${assetId}/checkin-token`, { method: 'POST' });
+    const url = `${window.location.origin}/checkin/${r.token}`;
+    openModal(`
+      <div class="modal-head"><h2>Self-service check-in link</h2><button class="x-btn" onclick="closeModal()">✕</button></div>
+      <div class="modal-body">
+        <p class="muted" style="margin-bottom:12px">Share this link with the employee to let them check in the asset without logging in. The link is single-use and expires in 7 days.</p>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input id="checkin-link-url" value="${esc(url)}" readonly
+            style="flex:1;padding:9px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg);color:var(--text);font-family:var(--mono);font-size:12px">
+          <button class="btn btn-accent btn-sm" onclick="navigator.clipboard.writeText('${esc(url)}').then(()=>toast('Copied'))">Copy</button>
+        </div>
+      </div>
+      <div class="modal-foot"><button class="btn btn-ghost" onclick="closeModal()">Close</button></div>`);
+  } catch (e) { toast(e.message, 'err'); }
 }
 
 async function loadQrImage(assetId) {
@@ -483,19 +806,56 @@ function openImport() {
       <div class="field"><input type="file" id="csv-file" accept=".csv"></div>
       <div id="import-result"></div>
     </div>
-    <div class="modal-foot"><button type="button" class="btn btn-ghost" onclick="closeModal()">Cancel</button><button type="button" class="btn btn-primary" onclick="doImport()">Import</button></div>`);
+    <div class="modal-foot">
+      <button type="button" class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      <button type="button" class="btn btn-ghost" id="import-preview-btn" onclick="doImportPreview()">Preview</button>
+      <button type="button" class="btn btn-primary" id="import-confirm-btn" style="display:none" onclick="doImport()">Confirm Import</button>
+    </div>`);
+}
+
+async function doImportPreview() {
+  const input = document.getElementById('csv-file');
+  if (!input.files.length) return toast('Choose a CSV file first', 'err');
+  const fd = new FormData(); fd.append('file', input.files[0]);
+  const btn = document.getElementById('import-preview-btn');
+  btn.disabled = true; btn.textContent = 'Analysing…';
+  try {
+    const r = await api('/assets/import/csv/preview', { method: 'POST', body: fd });
+    const s = r.summary;
+    const errHtml = r.errors.length
+      ? `<div style="margin-top:10px"><b style="color:var(--red)">${s.errors} error${s.errors !== 1 ? 's' : ''}</b><ul style="margin:4px 0 0 18px;font-size:13px;color:var(--red)">${r.errors.slice(0, 10).map(e => `<li>Row ${e.row}: ${esc(e.error || e.message || '')}</li>`).join('')}${r.errors.length > 10 ? `<li>…and ${r.errors.length - 10} more</li>` : ''}</ul></div>` : '';
+    const cfHtml = r.new_cf_defs.length
+      ? `<div style="margin-top:8px;font-size:13px" class="muted">New custom field columns: ${r.new_cf_defs.map(c => `<span class="tag">${esc(c)}</span>`).join(' ')}</div>` : '';
+    const createsHtml = r.creates.length
+      ? `<details style="margin-top:10px"><summary style="cursor:pointer;font-size:13px"><b>${s.creates}</b> new asset${s.creates !== 1 ? 's' : ''}</summary><table class="data-table" style="margin-top:6px;font-size:12px"><thead><tr><th>Tag</th><th>Name</th><th>Category</th><th>Status</th></tr></thead><tbody>${r.creates.slice(0, 50).map(a => `<tr><td>${esc(a.asset_tag)}</td><td>${esc(a.name)}</td><td>${esc(a.category||'')}</td><td>${esc(a.status)}</td></tr>`).join('')}${r.creates.length > 50 ? `<tr><td colspan="4" class="muted">…and ${r.creates.length - 50} more</td></tr>` : ''}</tbody></table></details>` : `<div style="font-size:13px;margin-top:8px">0 new assets</div>`;
+    const updatesHtml = r.updates.length
+      ? `<details style="margin-top:6px"><summary style="cursor:pointer;font-size:13px"><b>${s.updates}</b> update${s.updates !== 1 ? 's' : ''}</summary><table class="data-table" style="margin-top:6px;font-size:12px"><thead><tr><th>Tag</th><th>Name</th><th>Changes</th></tr></thead><tbody>${r.updates.slice(0, 50).map(a => `<tr><td>${esc(a.asset_tag)}</td><td>${esc(a.name)}</td><td>${a.changes.length ? a.changes.map(c => `${esc(c.field)}: <span style="color:var(--red)">${esc(c.from)}</span> → <span style="color:var(--green)">${esc(c.to)}</span>`).join(', ') : '<span class="muted">no field changes</span>'}</td></tr>`).join('')}${r.updates.length > 50 ? `<tr><td colspan="3" class="muted">…and ${r.updates.length - 50} more</td></tr>` : ''}</tbody></table></details>` : `<div style="font-size:13px;margin-top:4px">0 updates</div>`;
+    document.getElementById('import-result').innerHTML = `
+      <div class="card" style="padding:14px;margin-top:10px">
+        <div style="font-size:14px;font-weight:600;margin-bottom:6px">Preview — ${s.total_rows} row${s.total_rows !== 1 ? 's' : ''}</div>
+        ${createsHtml}${updatesHtml}${errHtml}${cfHtml}
+      </div>`;
+    if (s.creates + s.updates > 0) {
+      document.getElementById('import-confirm-btn').style.display = '';
+    }
+  } catch (e) { toast(e.message, 'err'); }
+  finally { btn.disabled = false; btn.textContent = 'Preview'; }
 }
 
 async function doImport() {
   const input = document.getElementById('csv-file');
   if (!input.files.length) return toast('Choose a CSV file first', 'err');
   const fd = new FormData(); fd.append('file', input.files[0]);
+  const btn = document.getElementById('import-confirm-btn');
+  btn.disabled = true; btn.textContent = 'Importing…';
   try {
     const r = await api('/assets/import/csv', { method: 'POST', body: fd });
-    document.getElementById('import-result').innerHTML = `<div class="card" style="padding:14px;margin-top:6px"><b>${r.created} created</b>, <b>${r.updated} updated</b>.${r.errors.length ? `<div style="color:var(--red);margin-top:8px;font-size:13px">${r.errors.slice(0, 5).map(esc).join('<br>')}</div>` : ''}</div>`;
+    document.getElementById('import-result').innerHTML = `<div class="card" style="padding:14px;margin-top:6px;border-color:var(--green)"><b style="color:var(--green)">${r.created} created</b>, <b>${r.updated} updated</b>.${r.errors.length ? `<div style="color:var(--red);margin-top:8px;font-size:13px">${r.errors.slice(0, 5).map(esc).join('<br>')}</div>` : ''}</div>`;
+    btn.style.display = 'none';
     _lookups = { categories: [], locations: [], employees: [] };
     toast(`Imported ${r.created + r.updated} assets`);
-  } catch (e) { toast(e.message, 'err'); }
+    loadAssets();
+  } catch (e) { toast(e.message, 'err'); btn.disabled = false; btn.textContent = 'Confirm Import'; }
 }
 
 // ============ CATEGORIES / LOCATIONS / PEOPLE ============
@@ -504,7 +864,8 @@ const ICON_CHOICES = ['box', 'laptop', 'monitor', 'tv', 'smartphone', 'server', 
 async function pageCategories() {
   const page = document.getElementById('page');
   page.innerHTML = pageHeader('Categories', null, `<button class="btn btn-accent" onclick="openCatForm()">${icon('plus', 16)}New Category</button>`) + loading();
-  let cats; try { cats = await api('/categories'); } catch (e) { return toast(e.message, 'err'); }
+  let _catsResp; try { _catsResp = await api('/categories'); } catch (e) { return toast(e.message, 'err'); }
+  const cats = _catsResp.items ?? _catsResp;
   _lookups.categories = cats;
   const body = cats.length ? `<div class="chip-grid">${cats.map(c => `
     <div class="chip"><div class="ci"><div class="ico">${icon(c.icon || 'box', 20)}</div><div><b>${esc(c.name)}</b><small>${c.asset_count} asset${c.asset_count !== 1 ? 's' : ''}</small></div></div>
@@ -532,7 +893,8 @@ async function openCatForm(id = null) {
 async function pageLocations() {
   const page = document.getElementById('page');
   page.innerHTML = pageHeader('Locations', null, `<button class="btn btn-accent" onclick="openLocForm()">${icon('plus', 16)}New Location</button>`) + loading();
-  let locs; try { locs = await api('/locations'); } catch (e) { return toast(e.message, 'err'); }
+  let _locsResp; try { _locsResp = await api('/locations'); } catch (e) { return toast(e.message, 'err'); }
+  const locs = _locsResp.items ?? _locsResp;
   _lookups.locations = locs;
   const body = locs.length ? `<div class="chip-grid">${locs.map(l => `
     <div class="chip"><div class="ci"><div class="ico">${icon('pin', 20)}</div><div><b>${esc(l.name)}</b><small>${l.address ? esc(l.address) + ' · ' : ''}${l.asset_count} asset${l.asset_count !== 1 ? 's' : ''}</small></div></div>
@@ -560,11 +922,12 @@ async function openLocForm(id = null) {
 async function pageEmployees() {
   const page = document.getElementById('page');
   page.innerHTML = pageHeader('People', null, `<button class="btn btn-accent" onclick="openEmpForm()">${icon('plus', 16)}New Person</button>`) + loading();
-  let emps; try { emps = await api('/employees'); } catch (e) { return toast(e.message, 'err'); }
+  let _empsResp; try { _empsResp = await api('/employees'); } catch (e) { return toast(e.message, 'err'); }
+  const emps = _empsResp.items ?? _empsResp;
   _lookups.employees = emps;
   const body = emps.length ? `<div class="chip-grid">${emps.map(e => `
-    <div class="chip"><div class="ci"><div class="ico" style="background:var(--ink);color:var(--accent)"><b style="font-family:var(--display)">${esc(e.name[0].toUpperCase())}</b></div><div><b>${esc(e.name)}</b><small>${e.department ? esc(e.department) + ' · ' : ''}${e.asset_count} asset${e.asset_count !== 1 ? 's' : ''}</small></div></div>
-    <div class="acts"><button class="icon-btn" onclick="openEmpForm(${e.id})">${icon('edit', 16)}</button><button class="icon-btn danger" onclick="delLookup('employees', ${e.id}, 'Person')">${icon('trash', 16)}</button></div></div>`).join('')}</div>`
+    <div class="chip"><div class="ci" style="cursor:pointer" onclick="openEmployeeHistory(${e.id})"><div class="ico" style="background:var(--ink);color:var(--accent)"><b style="font-family:var(--display)">${esc(e.name[0].toUpperCase())}</b></div><div><b>${esc(e.name)}</b><small>${e.department ? esc(e.department) + ' · ' : ''}${e.asset_count} asset${e.asset_count !== 1 ? 's' : ''}</small></div></div>
+    <div class="acts"><button class="icon-btn" title="Assignment history" onclick="openEmployeeHistory(${e.id})">${icon('clock', 16)}</button>${e.asset_count > 0 ? `<button class="icon-btn" title="Bulk reassign assets" onclick="openBulkReassign(${e.id}, ${JSON.stringify(e.name)})">${icon('shuffle', 16)}</button>` : ''}<button class="icon-btn" onclick="openEmpForm(${e.id})">${icon('edit', 16)}</button><button class="icon-btn danger" onclick="delLookup('employees', ${e.id}, 'Person')">${icon('trash', 16)}</button></div></div>`).join('')}</div>`
     : `<div class="card"><div class="empty">${icon('users', 44)}<h3>No people yet</h3><p>Add people to assign assets to them.</p></div></div>`;
   page.innerHTML = pageHeader('People', null, `<button class="btn btn-accent" onclick="openEmpForm()">${icon('plus', 16)}New Person</button>`) + body;
 }
@@ -586,10 +949,97 @@ async function openEmpForm(id = null) {
   };
 }
 
+async function openEmployeeHistory(eid) {
+  openModal(`
+    <div class="modal-head"><h2>${icon('clock',16)} Assignment History</h2><button class="x-btn" onclick="closeModal()">✕</button></div>
+    <div class="modal-body" id="emp-history-body">${loading()}</div>`, true);
+
+  try {
+    const data = await api(`/employees/${eid}/history`);
+    const emp  = data.employee;
+    const hist = data.history;
+
+    const rows = hist.length ? hist.map(h => `
+      <tr>
+        <td><a href="#" onclick="navigate('asset-detail',${h.asset_id});closeModal();return false"
+               style="color:var(--accent);font-weight:600">${esc(h.asset_tag)}</a></td>
+        <td>${esc(h.asset_name)}</td>
+        <td><span class="badge ${h.action}">${h.action}</span></td>
+        <td style="font-size:12px;color:var(--text-muted)">${h.timestamp ? h.timestamp.replace('T',' ').slice(0,16) : '—'}</td>
+        <td>${h.currently_assigned
+          ? `<span style="font-size:11px;background:rgba(212,240,52,.15);color:var(--accent);padding:2px 7px;border-radius:4px;font-weight:600">Current</span>`
+          : ''}</td>
+      </tr>`).join('')
+      : `<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--text-muted)">No assignment history yet.</td></tr>`;
+
+    document.getElementById('emp-history-body').innerHTML = `
+      <div style="margin-bottom:16px">
+        <div style="font-size:18px;font-weight:700">${esc(emp.name)}</div>
+        ${emp.department ? `<div style="font-size:13px;color:var(--text-muted)">${esc(emp.department)}</div>` : ''}
+        ${emp.email ? `<div style="font-size:13px;color:var(--text-muted)">${esc(emp.email)}</div>` : ''}
+      </div>
+      <div class="table-wrap" style="border:none;box-shadow:none;max-height:400px;overflow-y:auto">
+        <table>
+          <thead><tr><th>Tag</th><th>Asset</th><th>Action</th><th>Date</th><th></th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+  } catch(e) {
+    document.getElementById('emp-history-body').innerHTML =
+      `<p style="color:var(--red)">${esc(e.message)}</p>`;
+  }
+}
+
 async function delLookup(type, id, label) {
   if (!confirm(`Delete this ${label.toLowerCase()}?`)) return;
-  try { await api(`/${type}/${id}`, { method: 'DELETE' }); toast(`${label} deleted`); ({ categories: pageCategories, locations: pageLocations, employees: pageEmployees }[type])(); }
-  catch (e) { toast(e.message, 'err'); }
+  try {
+    await api(`/${type}/${id}`, { method: 'DELETE' });
+    toast(`${label} deleted`);
+    ({ categories: pageCategories, locations: pageLocations, employees: pageEmployees }[type])();
+  } catch (e) {
+    if (type === 'employees' && e.message && e.message.includes('assets assigned')) {
+      const emp = _lookups.employees.find(x => x.id === id);
+      openBulkReassign(id, emp?.name || 'this person');
+    } else {
+      toast(e.message, 'err');
+    }
+  }
+}
+
+async function openBulkReassign(eid, name) {
+  if (!_lookups.employees.length) await loadLookups();
+  const others = _lookups.employees.filter(e => e.id !== eid);
+  const opts = others.map(e => `<option value="${e.id}">${esc(e.name)}${e.department ? ' · ' + esc(e.department) : ''}</option>`).join('');
+  openModal(`
+    <div class="modal-head"><h2>Reassign assets</h2><button class="x-btn" onclick="closeModal()">✕</button></div>
+    <div class="modal-body">
+      <p style="margin-bottom:14px"><b>${esc(name)}</b> still has assets assigned. Reassign them before deleting.</p>
+      <div class="field">
+        <label>Reassign all assets to</label>
+        <select id="reassign-to">
+          <option value="">— Unassign (set to available) —</option>
+          ${opts}
+        </select>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      <button type="button" class="btn btn-primary" onclick="doReassignAndDelete(${eid})">Reassign &amp; Delete</button>
+    </div>`);
+}
+
+async function doReassignAndDelete(eid) {
+  const toId = document.getElementById('reassign-to').value;
+  try {
+    await api(`/employees/${eid}/reassign`, {
+      method: 'POST',
+      json: { to_employee_id: toId ? parseInt(toId) : null },
+    });
+    await api(`/employees/${eid}`, { method: 'DELETE' });
+    closeModal();
+    toast('Assets reassigned and person deleted');
+    pageEmployees();
+  } catch (e) { toast(e.message, 'err'); }
 }
 
 // ============ SETTINGS ============
@@ -653,6 +1103,12 @@ async function pageSettings() {
           </div>
           <div class="field"><label>Logo URL</label>
             <input name="logo_url" value="${esc(s.logo_url||'')}" placeholder="https://…" ${canEdit?'':'readonly'}></div>
+          <div class="field"><label>Asset Tag Prefix <span class="muted" style="font-weight:400;font-size:12px">(optional — e.g. ACME- )</span></label>
+            <input name="asset_tag_prefix" value="${esc(s.asset_tag_prefix||'')}" placeholder="ACME-" maxlength="20" style="text-transform:uppercase" ${canEdit?'':'readonly'}></div>
+          <div class="field"><label>Webhook URL <span class="muted" style="font-weight:400;font-size:12px">(optional — receives asset.created, asset.updated, asset.deleted, request.status_changed, warranty.expiring)</span></label>
+            <input name="webhook_url" type="url" value="${esc(s.webhook_url||'')}" placeholder="https://hooks.example.com/tether" ${canEdit?'':'readonly'}></div>
+          <div class="field"><label>Webhook Secret <span class="muted" style="font-weight:400;font-size:12px">(used to compute X-Tether-Signature HMAC-SHA256)</span></label>
+            <input name="webhook_secret" type="password" value="${esc(s.webhook_secret||'')}" placeholder="Leave blank to keep current" autocomplete="off" ${canEdit?'':'readonly'}></div>
           ${canEdit?`<button class="btn btn-primary" type="submit">Save Settings</button>`:''}
         </form>
       </div></div>
@@ -673,13 +1129,20 @@ async function pageSettings() {
           <button class="btn btn-primary" type="submit">Update Password</button>
         </form>
       </div></div>
+      ${State.user?.is_msp_staff ? `<div class="panel" id="totp-panel">
+        <div class="panel-head"><h3>${icon('shield',16)} Two-Factor Authentication</h3></div>
+        <div class="panel-body" id="totp-panel-body">${loading()}</div>
+      </div>` : ''}
     </div>`;
 
   if (canEdit) {
     document.getElementById('settings-form').onsubmit = async (e) => {
       e.preventDefault(); const f = new FormData(e.target);
       const body = {name:f.get('name'),currency:f.get('currency'),
-                    accent_color:f.get('accent_color'),logo_url:f.get('logo_url')};
+                    accent_color:f.get('accent_color'),logo_url:f.get('logo_url'),
+                    asset_tag_prefix: f.get('asset_tag_prefix') || null,
+                    webhook_url: f.get('webhook_url') || null,
+                    webhook_secret: f.get('webhook_secret') || null};
       try {
         await api('/settings',{method:'PUT',json:body});
         State.settings = {...State.settings, ...body};
@@ -723,6 +1186,84 @@ async function pageSettings() {
   };
 
   if (canManageCats) _loadCustomFieldList();
+  if (State.user?.is_msp_staff) _loadTotpPanel();
+}
+
+async function _loadTotpPanel() {
+  const wrap = document.getElementById('totp-panel-body');
+  if (!wrap) return;
+  try {
+    const status = await api('/auth/totp/status');
+    _renderTotpPanel(wrap, status.enabled);
+  } catch(e) { wrap.innerHTML = `<p style="color:var(--red)">${esc(e.message)}</p>`; }
+}
+
+function _renderTotpPanel(wrap, enabled) {
+  if (enabled) {
+    wrap.innerHTML = `
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+        <span style="background:var(--green,.4em);color:#fff;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:600;background:#22c55e">Active</span>
+        <span style="font-size:13px;color:var(--text-muted)">Your account is protected with 2FA.</span>
+      </div>
+      <form id="totp-disable-form">
+        <div class="field"><label>Current password to disable 2FA</label>
+          <input name="password" type="password" required placeholder="Enter your password"></div>
+        <button class="btn btn-danger btn-sm" type="submit">Disable 2FA</button>
+      </form>`;
+    document.getElementById('totp-disable-form').onsubmit = async (e) => {
+      e.preventDefault(); const btn = e.target.querySelector('button');
+      btn.disabled = true; btn.textContent = 'Disabling…';
+      try {
+        await api('/auth/totp',{method:'DELETE',json:{password:new FormData(e.target).get('password')}});
+        toast('2FA disabled'); _renderTotpPanel(wrap, false);
+      } catch(err) { toast(err.message,'err'); btn.disabled=false; btn.textContent='Disable 2FA'; }
+    };
+  } else {
+    wrap.innerHTML = `
+      <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">
+        Add an extra layer of security. You'll need an authenticator app like Google Authenticator, Authy, or 1Password.
+      </p>
+      <button class="btn btn-primary btn-sm" id="totp-setup-btn">Set up 2FA</button>
+      <div id="totp-setup-flow" style="display:none;margin-top:18px"></div>`;
+    document.getElementById('totp-setup-btn').onclick = async () => {
+      const btn = document.getElementById('totp-setup-btn');
+      btn.disabled = true; btn.textContent = 'Loading…';
+      try {
+        const data = await api('/auth/totp/setup',{method:'POST'});
+        btn.style.display = 'none';
+        const flow = document.getElementById('totp-setup-flow');
+        flow.style.display = '';
+        flow.innerHTML = `
+          <p style="font-size:13px;margin-bottom:12px">
+            Scan this QR code with your authenticator app, then enter the 6-digit code to activate.
+          </p>
+          <div style="background:#fff;display:inline-block;padding:10px;border-radius:8px;margin-bottom:14px">
+            ${data.qr_svg}
+          </div>
+          <details style="margin-bottom:14px">
+            <summary style="font-size:12px;color:var(--text-muted);cursor:pointer">Can't scan? Enter key manually</summary>
+            <code style="font-size:12px;word-break:break-all;display:block;margin-top:6px;padding:8px;background:var(--bg);border-radius:6px">${esc(data.secret)}</code>
+          </details>
+          <form id="totp-verify-form">
+            <div class="field"><label>Verification code</label>
+              <input name="code" type="text" inputmode="numeric" pattern="[0-9]*"
+                autocomplete="one-time-code" maxlength="8" placeholder="000000" required
+                style="letter-spacing:4px;font-size:22px;text-align:center;max-width:180px"></div>
+            <button class="btn btn-accent" type="submit">Activate 2FA</button>
+          </form>`;
+        document.getElementById('totp-verify-form').onsubmit = async (ev) => {
+          ev.preventDefault(); const vbtn = ev.target.querySelector('button');
+          vbtn.disabled=true; vbtn.textContent='Verifying…';
+          const code = new FormData(ev.target).get('code').replace(/\s/g,'');
+          try {
+            await api('/auth/totp/verify',{method:'POST',json:{code}});
+            toast('2FA is now active'); _renderTotpPanel(wrap, true);
+          } catch(err) { toast(err.message,'err'); vbtn.disabled=false; vbtn.textContent='Activate 2FA'; }
+        };
+        document.querySelector('#totp-verify-form input[name=code]')?.focus();
+      } catch(err) { toast(err.message,'err'); btn.disabled=false; btn.textContent='Set up 2FA'; }
+    };
+  }
 }
 
 function _emailHeaderPreview(logoUrl, brandName, accent) {
@@ -1653,6 +2194,7 @@ function _reportsNav(active) {
     { id: 'reports-warranty',     label: `${icon('alert',14)} Warranty` },
     { id: 'reports-value',        label: `${icon('dollar',14)} Value` },
     { id: 'reports-depreciation', label: `${icon('refresh',14)} Depreciation` },
+    { id: 'reports-age',          label: `${icon('clock',14)} Age` },
   ];
   return `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:22px">
     ${tabs.map(t => `<button class="btn ${t.id === active ? 'btn-accent' : 'btn-ghost'} btn-sm"
@@ -1750,6 +2292,7 @@ async function pageReports() {
     { id: 'reports-warranty',     ic: 'alert',    title: 'Warranty Report',   desc: 'Assets with expiring warranties' },
     { id: 'reports-value',        ic: 'dollar',   title: 'Value Report',      desc: 'Asset value by category and tenant' },
     { id: 'reports-depreciation', ic: 'refresh',  title: 'Depreciation',      desc: 'Book values and end-of-life tracking' },
+    { id: 'reports-age',          ic: 'clock',    title: 'Age Report',        desc: 'Asset age brackets for refresh planning' },
   ].map(t => `
     <div class="panel" style="margin:0;cursor:pointer" onclick="navigate('${t.id}')">
       <div class="panel-body" style="display:flex;align-items:center;gap:14px;padding:16px 18px">
@@ -2089,9 +2632,100 @@ async function pageReportDepreciation() {
         </div></div>`}`;
 }
 
+// ── Age Report ────────────────────────────────────────────────────────────────
+
+async function pageReportsAge() {
+  const page = document.getElementById('page');
+  page.innerHTML = pageHeader('Reports') + _reportsNav('reports-age') + loading();
+  let data;
+  try { data = await api('/reports/age'); }
+  catch (e) { page.innerHTML += `<p style="color:var(--red)">${esc(e.message)}</p>`; return; }
+
+  const BRACKET_COLORS = ['#10b981', '#6366f1', '#f59e0b', '#ef4444'];
+  const bracketBars = data.brackets.map((b, i) => {
+    const pct = data.total > 0 ? Math.round((b.count / data.total) * 100) : 0;
+    return `
+      <div style="margin-bottom:14px">
+        <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:5px">
+          <span style="font-weight:600">${esc(b.label)}</span>
+          <span style="color:var(--text-muted)">${b.count} asset${b.count !== 1 ? 's' : ''} · ${pct}%</span>
+        </div>
+        <div class="usage-bar-track">
+          <div class="usage-bar-fill" style="width:${pct}%;background:${BRACKET_COLORS[i]};border-radius:4px"></div>
+        </div>
+        ${b.assets.length ? `<details style="margin-top:8px">
+          <summary style="cursor:pointer;font-size:12.5px;color:var(--text-muted)">Show assets</summary>
+          <div class="table-wrap" style="border:none;box-shadow:none;margin-top:6px">
+            <table class="data-table">
+              <thead><tr><th>Tag</th><th>Name</th><th>Purchase Date</th><th>Age</th><th>Status</th><th>Category</th></tr></thead>
+              <tbody>${b.assets.map(a => `
+                <tr onclick="navigate('asset-detail',${a.id})" style="cursor:pointer">
+                  <td><span class="tag">${esc(a.asset_tag)}</span></td>
+                  <td>${esc(a.name)}</td>
+                  <td>${fmtDate(a.purchase_date)}</td>
+                  <td>${a.age_years} yr</td>
+                  <td>${statusBadge(a.status)}</td>
+                  <td>${esc(a.category||'—')}</td>
+                </tr>`).join('')}</tbody>
+            </table>
+          </div>
+        </details>` : ''}
+      </div>`;
+  }).join('');
+
+  page.innerHTML = pageHeader('Reports') + _reportsNav('reports-age') + `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+      <div>
+        <b>${data.total}</b> assets total
+        ${data.no_purchase_date > 0 ? `<span class="muted" style="font-size:12.5px;margin-left:10px">(${data.no_purchase_date} without purchase date, not shown)</span>` : ''}
+      </div>
+      <button class="btn btn-ghost btn-sm" onclick="_downloadAgeReport()">${icon('download',14)} Export CSV</button>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h3>${icon('clock',16)} Asset Age Brackets</h3></div>
+      <div class="panel-body">
+        ${data.brackets.every(b => b.count === 0)
+          ? `<p class="muted">No assets with purchase dates found. Add purchase dates to assets to use this report.</p>`
+          : bracketBars}
+      </div>
+    </div>`;
+}
+
+async function _downloadDepSchedule(assetId) {
+  const url = `/api/reports/depreciation/schedule/${assetId}/export`;
+  try {
+    const resp = await fetch(url, { headers: { Authorization: 'Bearer ' + State.token } });
+    if (!resp.ok) throw new Error('Export failed');
+    const blob = await resp.blob();
+    const cd = resp.headers.get('content-disposition') || '';
+    const fname = (cd.match(/filename=([^;]+)/) || [])[1] || `tether-depreciation-${assetId}.csv`;
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = fname;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  } catch(e) { toast(e.message, 'err'); }
+}
+
+async function _downloadAgeReport() {
+  const url = '/api/reports/age/export';
+  try {
+    const resp = await fetch(url, { headers: { Authorization: 'Bearer ' + State.token } });
+    if (!resp.ok) throw new Error('Export failed');
+    const blob = await resp.blob();
+    const cd = resp.headers.get('content-disposition') || '';
+    const fname = (cd.match(/filename=([^;]+)/) || [])[1] || 'tether-report-age.csv';
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = fname;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  } catch(e) { toast(e.message, 'err'); }
+}
+
 // ── Depreciation helpers ──────────────────────────────────────────────────────
 
-function _renderDepreciationPanel(dep) {
+function _renderDepreciationPanel(dep, assetId) {
   if (!dep) return '';
   const pct        = dep.depreciation_pct;
   const barClass   = dep.fully_depreciated ? 'exceeded' : pct >= 80 ? 'warn' : '';
@@ -2111,7 +2745,7 @@ function _renderDepreciationPanel(dep) {
 
   return `
     <div class="panel" style="margin-top:18px">
-      <div class="panel-head"><h3>${icon('activity', 16)} Depreciation</h3></div>
+      <div class="panel-head"><h3>${icon('activity', 16)} Depreciation</h3>${assetId ? `<button class="btn btn-ghost btn-sm" onclick="_downloadDepSchedule(${assetId})">${icon('download',14)} Schedule</button>` : ''}</div>
       <div class="panel-body">
         ${banner}
         <div style="margin-bottom:16px">
@@ -2411,8 +3045,9 @@ async function viewLicence(id) {
 async function openAssignModal(licId) {
   let employees = [], assets = [];
   try {
-    [employees, assets] = await Promise.all([api('/employees'), api('/assets?limit=200')]);
-    assets = assets.items || assets;
+    let [empsResp, assetsResp] = await Promise.all([api('/employees'), api('/assets?limit=200')]);
+    employees = empsResp.items ?? empsResp;
+    assets = assetsResp.items ?? assetsResp;
   } catch(e) { toast(e.message,'err'); return; }
 
   const empOpts = employees.map(e =>
@@ -2494,12 +3129,16 @@ const _ACT_LABEL = {
 let _actOffset   = 0;
 let _actFilter   = '';
 let _actSearch   = '';
+let _actDateFrom = '';
+let _actDateTo   = '';
 const _ACT_LIMIT = 50;
 
 async function pageActivity() {
   _actOffset = 0;
   _actFilter = '';
   _actSearch = '';
+  _actDateFrom = '';
+  _actDateTo   = '';
 
   const page = document.getElementById('page');
   page.innerHTML = pageHeader('Activity Feed') + `
@@ -2519,6 +3158,18 @@ async function pageActivity() {
           oninput="_actApplyFilter()"
           style="padding:7px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);
                  background:var(--surface);color:var(--text);font-size:13.5px;min-width:220px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text-muted)">
+          From
+          <input id="act-date-from" type="date" onchange="_actApplyFilter()"
+            style="padding:6px 8px;border:1px solid var(--border);border-radius:var(--radius-sm);
+                   background:var(--surface);color:var(--text);font-size:13px">
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text-muted)">
+          To
+          <input id="act-date-to" type="date" onchange="_actApplyFilter()"
+            style="padding:6px 8px;border:1px solid var(--border);border-radius:var(--radius-sm);
+                   background:var(--surface);color:var(--text);font-size:13px">
+        </label>
       </div>
     </div>
     <div id="act-feed">${loading()}</div>`;
@@ -2532,7 +3183,9 @@ async function _actLoad(reset = false) {
   if (!feed) return;
 
   const qs = new URLSearchParams({ limit: _ACT_LIMIT, offset: _actOffset });
-  if (_actFilter) qs.set('action', _actFilter);
+  if (_actFilter)   qs.set('action',    _actFilter);
+  if (_actDateFrom) qs.set('date_from', _actDateFrom);
+  if (_actDateTo)   qs.set('date_to',   _actDateTo);
 
   let data;
   try { data = await api('/assets/activity?' + qs); }
@@ -2624,8 +3277,10 @@ async function _actLoad(reset = false) {
 }
 
 function _actApplyFilter() {
-  _actFilter = document.getElementById('act-action-filter')?.value || '';
-  _actSearch = document.getElementById('act-search')?.value || '';
+  _actFilter   = document.getElementById('act-action-filter')?.value || '';
+  _actSearch   = document.getElementById('act-search')?.value || '';
+  _actDateFrom = document.getElementById('act-date-from')?.value || '';
+  _actDateTo   = document.getElementById('act-date-to')?.value || '';
   _actOffset = 0;
   const feed = document.getElementById('act-feed');
   if (feed) feed.innerHTML = loading();

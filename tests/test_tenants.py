@@ -58,7 +58,7 @@ class TestCreateTenant:
         h = {**auth, "host": f"{t['slug']}.localhost"}
         r = client.get("/api/categories", headers=h)
         assert r.status_code == 200
-        names = [c["name"] for c in r.json()]
+        names = [c["name"] for c in r.json()["items"]]
         assert "Laptop" in names
         assert "Server" in names
 
@@ -68,7 +68,7 @@ class TestCreateTenant:
         h = {**auth, "host": f"{t['slug']}.localhost"}
         r = client.get("/api/locations", headers=h)
         assert r.status_code == 200
-        names = [l["name"] for l in r.json()]
+        names = [l["name"] for l in r.json()["items"]]
         assert "Head Office" in names
         assert "Warehouse" in names
 

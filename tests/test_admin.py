@@ -110,6 +110,25 @@ class TestWarrantyAlerts:
         assert r.status_code == 401
 
 
+class TestLicenceAlerts:
+    def test_licence_alert_blocked_when_email_not_configured(self, client, auth):
+        """EMAIL_PROVIDER=none in test env — alert should return 400."""
+        r = client.post("/api/admin/alerts/licence", headers=auth)
+        assert r.status_code == 400
+        assert "email" in r.json()["detail"].lower()
+
+    def test_licence_alert_requires_auth(self, client):
+        r = client.post("/api/admin/alerts/licence")
+        assert r.status_code == 401
+
+    def test_status_includes_licence_config(self, client, auth):
+        r = client.get("/api/admin/status", headers=auth)
+        assert r.status_code == 200
+        services = r.json()["services"]
+        assert "licence_alerts" in services
+        assert "licence_window_days" in services
+
+
 class TestAdminPermissions:
     """Non-MSP users must not access admin endpoints."""
 

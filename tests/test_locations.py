@@ -49,14 +49,17 @@ class TestListLocations:
     def test_list_returns_list(self, client, tenant_headers):
         r = client.get("/api/locations", headers=tenant_headers)
         assert r.status_code == 200
-        assert isinstance(r.json(), list)
+        data = r.json()
+        assert "items" in data
+        assert "total" in data
+        assert isinstance(data["items"], list)
 
     def test_created_location_appears(self, client, tenant_headers):
         name = _name()
         client.post("/api/locations", json={"name": name}, headers=tenant_headers)
         r = client.get("/api/locations", headers=tenant_headers)
         assert r.status_code == 200
-        names = [l["name"] for l in r.json()]
+        names = [l["name"] for l in r.json()["items"]]
         assert name in names
 
     def test_requires_authentication(self, client, tenant):

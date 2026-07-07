@@ -1,17 +1,50 @@
-.DS_Store
-.claude/
-
 # Python
 __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
-.env
 *.egg-info/
 dist/
 build/
+*.egg
+.eggs/
 
-# Pytest
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+
+# Testing
 .pytest_cache/
 htmlcov/
 .coverage
+.coverage.*
+coverage.xml
+
+# Database / data files
+backend/data/*.db
+backend/data/*.sqlite
+*.db
+*.sqlite
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE / editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Claude Code local context (not for GitHub)
+.claude/context/
+.claude/settings.local.json

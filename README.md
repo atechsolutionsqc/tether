@@ -10,7 +10,7 @@ A modern, self-hostable IT asset management tool. Run it as a **single company**
 - **Check-out / check-in** — assign assets to people with a full audit trail
 - **Asset requests** — employees can submit requests; admins approve or deny; email notifications on create and status change
 - **Dashboard** — total assets, value, status breakdown charts, expiring warranties, recent activity
-- **QR labels** — per-asset QR codes downloadable as PNG
+- **QR labels** — per-asset QR codes downloadable as PNG; bulk label sheets (select multiple → Print Labels) with small/medium/large size options, printable as PDF from the browser
 - **CSV import/export** — bulk-load assets; categories, locations, and people are created automatically; custom fields included dynamically
 - **Search & filter** — by keyword, status, category, location; sortable columns
 - **Bulk operations** — bulk status update, bulk location change, bulk delete
@@ -29,7 +29,9 @@ A modern, self-hostable IT asset management tool. Run it as a **single company**
 - **Billing** — Stripe-backed subscription management
 - **Email notifications** — supports SMTP, Resend, and SendGrid; white-label branding per tenant
 - **Warranty alerts** — scheduled alerts for assets expiring within a configurable window
+- **Licence expiry alerts** — scheduled daily alerts for software licences expiring soon (`LICENCE_ALERT_DAYS`)
 - **Automated backups** — scheduled S3-compatible backup of the database
+- **Two-factor authentication** — optional TOTP 2FA for MSP admin accounts; scan QR in any authenticator app
 - **Rate limiting** — in-memory or Redis-backed rate limits on auth endpoints
 
 ---

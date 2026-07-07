@@ -8,7 +8,7 @@ from models.models import User
 from schemas.schemas import Token, PasswordChange
 from security import (verify_password, create_token, hash_password,
                        get_current_user, CurrentUser, resolve_tenant_slug,
-                       validate_password_strength)
+                       validate_password_strength, create_totp_challenge_token)
 from rate_limit import is_limited, consume, clear
 import audit
 
@@ -29,7 +29,7 @@ def _record_failed_login(ip: str, email: str) -> None:
     consume("login_fail", email, limit=10, window_sec=5 * 60)
 
 
-@router.post("/login", response_model=Token)
+@router.post("/login")
 def login(request: Request, form: OAuth2PasswordRequestForm = Depends(),
           db: Session = Depends(get_db)):
     from models.models import Tenant, TenantDomain
@@ -56,6 +56,15 @@ def login(request: Request, form: OAuth2PasswordRequestForm = Depends(),
         tid = tenant.tenant_id if hasattr(tenant, "tenant_id") else (tenant.id if tenant else None)
         if tid and user.tenant_id != tid:
             raise HTTPException(status_code=403, detail="Not authorised for this tenant")
+
+    # Check if TOTP is enabled for this user — if so, issue a challenge token instead of a full session
+    from models.models import UserTotp
+    totp_record = db.query(UserTotp).filter(
+        UserTotp.user_id == user.id, UserTotp.enabled == True  # noqa: E712
+    ).first()
+    if totp_record:
+        clear("login_fail", form.username)
+        return {"totp_required": True, "totp_token": create_totp_challenge_token(user.id)}
 
     user.last_login = datetime.utcnow()
     db.commit()

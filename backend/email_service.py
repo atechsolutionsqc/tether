@@ -585,3 +585,63 @@ Log in to view: {login_url}
         from_name=tenant.email_from_name if tenant else None,
         from_address=tenant.email_from_address if tenant else None,
     )
+
+
+def send_licence_expiry_alert(to: str, name: str,
+                               expiring: list, login_url: str) -> bool:
+    """Notify MSP admins about software licences expiring soon."""
+    rows = "".join(
+        f'<tr>'
+        f'<td style="padding:10px 14px;border-bottom:1px solid #2e3340;color:#c9cdd6;font-size:14px;">{_e(lic["tenant"])}</td>'
+        f'<td style="padding:10px 14px;border-bottom:1px solid #2e3340;color:#c9cdd6;font-size:14px;">{_e(lic["name"])}</td>'
+        f'<td style="padding:10px 14px;border-bottom:1px solid #2e3340;color:#c9cdd6;font-size:14px;">{_e(lic["vendor"])}</td>'
+        f'<td style="padding:10px 14px;border-bottom:1px solid #2e3340;color:#f59e0b;font-size:14px;font-weight:600;">{_e(str(lic["expiry_date"]))}</td>'
+        f'</tr>'
+        for lic in expiring
+    )
+    html_body = f"""
+    <h2 style="color:#ffffff;font-size:22px;margin:0 0 12px;font-weight:700;">
+      Software licences expiring soon
+    </h2>
+    <p style="color:#9ca3af;margin:0 0 20px;line-height:1.7;">
+      Hi {_e(name)}, the following software licences are expiring within the alert window.
+    </p>
+    <table width="100%" cellpadding="0" cellspacing="0"
+           style="background:#15171c;border:1px solid #2e3340;border-radius:8px;overflow:hidden;margin-bottom:24px;">
+      <thead>
+        <tr style="background:#21242c;">
+          <th style="padding:10px 14px;text-align:left;color:#6b7280;font-size:11px;text-transform:uppercase;letter-spacing:.06em;">Client</th>
+          <th style="padding:10px 14px;text-align:left;color:#6b7280;font-size:11px;text-transform:uppercase;letter-spacing:.06em;">Licence</th>
+          <th style="padding:10px 14px;text-align:left;color:#6b7280;font-size:11px;text-transform:uppercase;letter-spacing:.06em;">Vendor</th>
+          <th style="padding:10px 14px;text-align:left;color:#6b7280;font-size:11px;text-transform:uppercase;letter-spacing:.06em;">Expires</th>
+        </tr>
+      </thead>
+      <tbody>{rows}</tbody>
+    </table>
+    <table cellpadding="0" cellspacing="0">
+      <tr><td style="background:#d4f034;border-radius:8px;">
+        <a href="{_e(login_url)}" style="display:inline-block;padding:12px 24px;color:#15171c;font-weight:700;font-size:14px;text-decoration:none;border-radius:8px;">
+          View licences
+        </a>
+      </td></tr>
+    </table>"""
+
+    items = "\n".join(
+        f"  - [{lic['tenant']}] {lic['name']} ({lic['vendor']}) — expires {lic['expiry_date']}"
+        for lic in expiring
+    )
+    text = f"""Software licences expiring soon
+
+Hi {name},
+
+{len(expiring)} licence(s) are expiring soon:
+
+{items}
+
+Log in to view: {login_url}
+"""
+    return send_email(
+        to, f"Licence alert — {len(expiring)} licence(s) expiring soon",
+        _base_template("Licences expiring soon", html_body),
+        text,
+    )

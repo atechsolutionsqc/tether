@@ -236,3 +236,33 @@ class TestClientViewerPortal:
         r = client.get("/api/requests", headers=headers)
         assert r.status_code == 200
         assert isinstance(r.json(), list)
+
+
+class TestAssetTagPrefix:
+    def _base_payload(self, tenant):
+        return {"name": tenant["name"], "currency": "USD",
+                "logo_url": "", "accent_color": "#d4f034"}
+
+    def test_settings_includes_asset_tag_prefix_field(self, client, tenant_headers):
+        r = client.get("/api/settings", headers=tenant_headers)
+        assert r.status_code == 200
+        assert "asset_tag_prefix" in r.json()
+
+    def test_set_and_retrieve_prefix(self, client, tenant_headers, tenant):
+        payload = {**self._base_payload(tenant), "asset_tag_prefix": "acme-"}
+        r = client.put("/api/settings", json=payload, headers=tenant_headers)
+        assert r.status_code == 200
+        r2 = client.get("/api/settings", headers=tenant_headers)
+        assert r2.json()["asset_tag_prefix"] == "ACME-"
+
+    def test_prefix_uppercased_on_save(self, client, tenant_headers, tenant):
+        payload = {**self._base_payload(tenant), "asset_tag_prefix": "org-"}
+        client.put("/api/settings", json=payload, headers=tenant_headers)
+        r = client.get("/api/settings", headers=tenant_headers)
+        assert r.json()["asset_tag_prefix"] == "ORG-"
+
+    def test_clear_prefix_with_empty_string(self, client, tenant_headers, tenant):
+        client.put("/api/settings", json={**self._base_payload(tenant), "asset_tag_prefix": "ACME-"}, headers=tenant_headers)
+        client.put("/api/settings", json={**self._base_payload(tenant), "asset_tag_prefix": ""}, headers=tenant_headers)
+        r = client.get("/api/settings", headers=tenant_headers)
+        assert r.json()["asset_tag_prefix"] == ""

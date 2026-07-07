@@ -185,6 +185,61 @@ class TestQR:
         assert r.status_code == 200
 
 
+class TestLabelPrint:
+    def test_labels_returns_html(self, client, tenant_headers, fresh_asset):
+        r = client.post("/api/assets/labels",
+                        json={"asset_ids": [fresh_asset["id"]], "size": "medium"},
+                        headers=tenant_headers)
+        assert r.status_code == 200
+        assert "text/html" in r.headers["content-type"]
+        assert fresh_asset["asset_tag"] in r.text
+        assert "<svg" in r.text  # QR code rendered
+
+    def test_labels_all_sizes(self, client, tenant_headers, fresh_asset):
+        for size in ("small", "medium", "large"):
+            r = client.post("/api/assets/labels",
+                            json={"asset_ids": [fresh_asset["id"]], "size": size},
+                            headers=tenant_headers)
+            assert r.status_code == 200, f"size={size} failed"
+
+    def test_labels_invalid_size_rejected(self, client, tenant_headers, fresh_asset):
+        r = client.post("/api/assets/labels",
+                        json={"asset_ids": [fresh_asset["id"]], "size": "giant"},
+                        headers=tenant_headers)
+        assert r.status_code == 422
+
+    def test_labels_empty_list_rejected(self, client, tenant_headers):
+        r = client.post("/api/assets/labels",
+                        json={"asset_ids": [], "size": "medium"},
+                        headers=tenant_headers)
+        assert r.status_code == 422
+
+    def test_labels_requires_auth(self, client, fresh_asset):
+        r = client.post("/api/assets/labels",
+                        json={"asset_ids": [fresh_asset["id"]], "size": "medium"})
+        assert r.status_code == 401
+
+    def test_labels_client_cannot_reach_other_tenant(self, client, auth, roles, tenant, fresh_asset):
+        """A client user from tenant A cannot print labels for tenant B's assets."""
+        # Create a second tenant and a client user scoped to it
+        r = client.post("/api/tenants", json={"name": "Label Tenant B", "slug": "labeltb", "currency": "USD"}, headers=auth)
+        assert r.status_code == 200
+        tid_b = r.json()["id"]
+        r = client.post("/api/users", json={
+            "name": "Label Client B", "email": "labelb@fixture.com",
+            "password": "Password123!", "role_id": roles["client_admin"]["id"],
+            "tenant_id": tid_b, "is_msp_staff": False,
+        }, headers=auth)
+        assert r.status_code == 200
+        lr = client.post("/api/auth/login", data={"username": "labelb@fixture.com", "password": "Password123!"})
+        b_auth = {"Authorization": f"Bearer {lr.json()['access_token']}", "host": "labeltb.localhost"}
+        # fresh_asset belongs to tenant A — tenant B user should get 404
+        r = client.post("/api/assets/labels",
+                        json={"asset_ids": [fresh_asset["id"]], "size": "medium"},
+                        headers=b_auth)
+        assert r.status_code == 404
+
+
 class TestCSV:
     def test_export_csv(self, client, tenant_headers, fresh_asset):
         r = client.get("/api/assets/export/csv", headers=tenant_headers)
@@ -236,6 +291,88 @@ class TestCSV:
         result = r.json()
         # App either reports an error OR creates with a default status — both acceptable
         assert "errors" in result or "created" in result
+
+
+class TestCsvImportPreview:
+    def test_preview_identifies_creates(self, client, tenant_headers):
+        import uuid
+        tag = f"PRV-{uuid.uuid4().hex[:8].upper()}"
+        csv_data = f"asset_tag,name,status\n{tag},Preview Asset,available\n"
+        r = client.post("/api/assets/import/csv/preview",
+                        files={"file": ("p.csv", csv_data, "text/csv")},
+                        headers=tenant_headers)
+        assert r.status_code == 200
+        d = r.json()
+        assert d["summary"]["creates"] == 1
+        assert d["summary"]["updates"] == 0
+        assert d["summary"]["errors"] == 0
+        assert any(a["asset_tag"] == tag for a in d["creates"])
+
+    def test_preview_identifies_updates(self, client, tenant_headers):
+        tag = _tag()
+        client.post("/api/assets", json={"asset_tag": tag, "name": "Old Name", "status": "available"},
+                    headers=tenant_headers)
+        csv_data = f"asset_tag,name,status\n{tag},New Name,available\n"
+        r = client.post("/api/assets/import/csv/preview",
+                        files={"file": ("u.csv", csv_data, "text/csv")},
+                        headers=tenant_headers)
+        assert r.status_code == 200
+        d = r.json()
+        assert d["summary"]["updates"] == 1
+        assert d["summary"]["creates"] == 0
+        row = d["updates"][0]
+        assert row["asset_tag"] == tag
+        assert any(c["field"] == "name" and c["to"] == "New Name" for c in row["changes"])
+
+    def test_preview_reports_missing_asset_tag(self, client, tenant_headers):
+        csv_data = "asset_tag,name,status\n,No Tag,available\n"
+        r = client.post("/api/assets/import/csv/preview",
+                        files={"file": ("e.csv", csv_data, "text/csv")},
+                        headers=tenant_headers)
+        assert r.status_code == 200
+        d = r.json()
+        assert d["summary"]["errors"] == 1
+        assert "missing asset_tag" in d["errors"][0]["error"]
+
+    def test_preview_reports_invalid_status(self, client, tenant_headers):
+        import uuid
+        tag = f"PRV-{uuid.uuid4().hex[:8].upper()}"
+        csv_data = f"asset_tag,name,status\n{tag},Bad,not_a_status\n"
+        r = client.post("/api/assets/import/csv/preview",
+                        files={"file": ("e.csv", csv_data, "text/csv")},
+                        headers=tenant_headers)
+        assert r.status_code == 200
+        d = r.json()
+        assert d["summary"]["errors"] >= 1
+
+    def test_preview_detects_new_custom_field_columns(self, client, tenant_headers):
+        import uuid
+        tag = f"PRV-{uuid.uuid4().hex[:8].upper()}"
+        csv_data = f"asset_tag,name,IMEI_Preview_{uuid.uuid4().hex[:4]}\n{tag},CF Asset,123456789\n"
+        r = client.post("/api/assets/import/csv/preview",
+                        files={"file": ("cf.csv", csv_data, "text/csv")},
+                        headers=tenant_headers)
+        assert r.status_code == 200
+        d = r.json()
+        assert d["summary"]["new_cf_defs"] >= 1
+
+    def test_preview_does_not_commit(self, client, tenant_headers):
+        import uuid
+        tag = f"PRV-NODML-{uuid.uuid4().hex[:6].upper()}"
+        csv_data = f"asset_tag,name,status\n{tag},Should Not Exist,available\n"
+        client.post("/api/assets/import/csv/preview",
+                    files={"file": ("p.csv", csv_data, "text/csv")},
+                    headers=tenant_headers)
+        r = client.get(f"/api/assets?search={tag}", headers=tenant_headers)
+        assert r.status_code == 200
+        assert all(a["asset_tag"] != tag for a in r.json()["items"])
+
+    def test_preview_requires_auth(self, client, tenant):
+        csv_data = "asset_tag,name\nX-001,Test\n"
+        r = client.post("/api/assets/import/csv/preview",
+                        files={"file": ("p.csv", csv_data, "text/csv")},
+                        headers={"host": f"{tenant['slug']}.localhost"})
+        assert r.status_code == 401
 
 
 class TestCrossTenantIsolation:
@@ -409,7 +546,7 @@ class TestBulkActions:
     def test_bulk_location_updates_all(self, client, tenant_headers, tenant, auth):
         ids = self._make_assets(client, tenant_headers, 2)
         # get a location that belongs to this tenant
-        locs = client.get("/api/locations", headers=tenant_headers).json()
+        locs = client.get("/api/locations", headers=tenant_headers).json()["items"]
         assert locs, "No locations seeded for fixture tenant"
         loc_id = locs[0]["id"]
 
@@ -431,7 +568,7 @@ class TestBulkActions:
             "name": f"ForeignLoc {uid}", "slug": f"foreignloc{uid}", "currency": "CAD",
         }, headers=auth).json()
         other_h = {**auth, "host": f"foreignloc{uid}.localhost"}
-        foreign_locs = client.get("/api/locations", headers=other_h).json()
+        foreign_locs = client.get("/api/locations", headers=other_h).json()["items"]
         assert foreign_locs, "No locations for foreign tenant"
         foreign_loc_id = foreign_locs[0]["id"]
 
@@ -643,3 +780,273 @@ class TestActivityFeed:
         assert r.status_code == 200
         tags = {ev["asset_tag"] for ev in r.json()["items"]}
         assert asset["asset_tag"] not in tags
+
+
+class TestActivityDateFilter:
+    """Tests for date_from / date_to filters on GET /api/assets/activity."""
+
+    def _make_asset(self, client, headers):
+        import time as _t
+        uid = int(_t.time() * 1000) % 99999999
+        r = client.post("/api/assets", json={
+            "asset_tag": f"ADF-{uid}", "name": f"ADF Asset {uid}", "status": "available",
+        }, headers=headers)
+        assert r.status_code == 200
+        return r.json()
+
+    def _checkout(self, client, headers, asset_id, employee_id):
+        r = client.post(f"/api/assets/{asset_id}/checkout",
+                        json={"employee_id": employee_id}, headers=headers)
+        assert r.status_code == 200
+
+    def test_date_from_excludes_older_events(self, client, tenant_headers, fresh_employee):
+        from datetime import date, timedelta
+        asset = self._make_asset(client, tenant_headers)
+        self._checkout(client, tenant_headers, asset["id"], fresh_employee["id"])
+
+        # date_from = tomorrow means today's events are excluded
+        future = (date.today() + timedelta(days=1)).isoformat()
+        r = client.get(f"/api/assets/activity?date_from={future}", headers=tenant_headers)
+        assert r.status_code == 200
+        tags = {ev["asset_tag"] for ev in r.json()["items"]}
+        assert asset["asset_tag"] not in tags
+
+    def test_date_to_excludes_future_events(self, client, tenant_headers, fresh_employee):
+        from datetime import date, timedelta
+        asset = self._make_asset(client, tenant_headers)
+        self._checkout(client, tenant_headers, asset["id"], fresh_employee["id"])
+
+        # date_to = yesterday means today's events are excluded
+        yesterday = (date.today() - timedelta(days=1)).isoformat()
+        r = client.get(f"/api/assets/activity?date_to={yesterday}", headers=tenant_headers)
+        assert r.status_code == 200
+        tags = {ev["asset_tag"] for ev in r.json()["items"]}
+        assert asset["asset_tag"] not in tags
+
+    def test_date_range_includes_todays_events(self, client, tenant_headers, fresh_employee):
+        from datetime import date
+        asset = self._make_asset(client, tenant_headers)
+        self._checkout(client, tenant_headers, asset["id"], fresh_employee["id"])
+
+        today = date.today().isoformat()
+        r = client.get(
+            f"/api/assets/activity?date_from={today}&date_to={today}",
+            headers=tenant_headers,
+        )
+        assert r.status_code == 200
+        tags = {ev["asset_tag"] for ev in r.json()["items"]}
+        assert asset["asset_tag"] in tags
+
+    def test_invalid_date_ignored_gracefully(self, client, tenant_headers):
+        r = client.get("/api/assets/activity?date_from=not-a-date", headers=tenant_headers)
+        assert r.status_code == 200
+
+
+class TestPublicCheckin:
+    def test_generate_token_returns_token(self, client, tenant_headers, fresh_asset):
+        r = client.post(f"/api/assets/{fresh_asset['id']}/checkin-token", headers=tenant_headers)
+        assert r.status_code == 200
+        d = r.json()
+        assert "token" in d
+        assert d["asset_tag"] == fresh_asset["asset_tag"]
+
+    def test_get_public_info_with_valid_token(self, client, tenant_headers, fresh_asset):
+        tok = client.post(f"/api/assets/{fresh_asset['id']}/checkin-token", headers=tenant_headers).json()["token"]
+        r = client.get(f"/api/assets/public/checkin/{tok}")
+        assert r.status_code == 200
+        d = r.json()
+        assert d["asset_tag"] == fresh_asset["asset_tag"]
+
+    def test_submit_checkin_marks_used(self, client, tenant_headers, fresh_asset, fresh_employee):
+        # Assign asset first
+        client.post(f"/api/assets/{fresh_asset['id']}/checkout",
+                    json={"employee_id": fresh_employee["id"]}, headers=tenant_headers)
+        tok = client.post(f"/api/assets/{fresh_asset['id']}/checkin-token", headers=tenant_headers).json()["token"]
+        r = client.post(f"/api/assets/public/checkin/{tok}")
+        assert r.status_code == 200
+        assert r.json()["ok"] is True
+        # Second use should be rejected
+        r2 = client.post(f"/api/assets/public/checkin/{tok}")
+        assert r2.status_code == 410
+
+    def test_invalid_token_returns_404(self, client):
+        r = client.get("/api/assets/public/checkin/nonexistent_token_xyz")
+        assert r.status_code == 404
+
+    def test_generate_token_requires_auth(self, client, fresh_asset, tenant):
+        r = client.post(f"/api/assets/{fresh_asset['id']}/checkin-token",
+                        headers={"host": f"{tenant['slug']}.localhost"})
+        assert r.status_code == 401
+
+
+class TestAssetNotes:
+    def test_notes_empty_for_new_asset(self, client, tenant_headers, fresh_asset):
+        r = client.get(f"/api/assets/{fresh_asset['id']}/notes", headers=tenant_headers)
+        assert r.status_code == 200
+        assert r.json() == []
+
+    def test_add_note_returns_note_object(self, client, tenant_headers, fresh_asset):
+        r = client.post(f"/api/assets/{fresh_asset['id']}/notes",
+                        json={"body": "Keyboard sticky key"},
+                        headers=tenant_headers)
+        assert r.status_code == 200
+        d = r.json()
+        assert d["body"] == "Keyboard sticky key"
+        assert "author_name" in d
+        assert "created_at" in d
+
+    def test_list_notes_contains_added_note(self, client, tenant_headers, fresh_asset):
+        client.post(f"/api/assets/{fresh_asset['id']}/notes",
+                    json={"body": "Battery replaced"},
+                    headers=tenant_headers)
+        r = client.get(f"/api/assets/{fresh_asset['id']}/notes", headers=tenant_headers)
+        assert r.status_code == 200
+        bodies = [n["body"] for n in r.json()]
+        assert "Battery replaced" in bodies
+
+    def test_delete_note(self, client, tenant_headers, fresh_asset):
+        note = client.post(f"/api/assets/{fresh_asset['id']}/notes",
+                           json={"body": "ToDelete"},
+                           headers=tenant_headers).json()
+        r = client.delete(f"/api/assets/{fresh_asset['id']}/notes/{note['id']}", headers=tenant_headers)
+        assert r.status_code == 200
+        assert r.json()["ok"] is True
+        remaining = [n["id"] for n in client.get(f"/api/assets/{fresh_asset['id']}/notes", headers=tenant_headers).json()]
+        assert note["id"] not in remaining
+
+    def test_notes_cross_tenant_isolation(self, client, auth, tenant_headers, fresh_asset):
+        import time
+        uid = int(time.time() * 1000) % 999999
+        other_t = client.post("/api/tenants", json={"name": f"NoteOther{uid}", "slug": f"noteother{uid}", "currency": "USD"}, headers=auth).json()
+        other_h = {**auth, "host": f"noteother{uid}.localhost"}
+        r = client.get(f"/api/assets/{fresh_asset['id']}/notes", headers=other_h)
+        assert r.status_code == 404
+
+    def test_notes_require_auth(self, client, fresh_asset, tenant):
+        r = client.get(f"/api/assets/{fresh_asset['id']}/notes",
+                       headers={"host": f"{tenant['slug']}.localhost"})
+        assert r.status_code == 401
+
+
+class TestAssetPhotos:
+    """Tests for GET/POST/DELETE /api/assets/{id}/photos."""
+
+    _TINY_PNG = (
+        b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01'
+        b'\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00'
+        b'\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82'
+    )
+
+    def test_upload_photo_returns_url(self, client, tenant_headers, fresh_asset):
+        r = client.post(
+            f"/api/assets/{fresh_asset['id']}/photos",
+            files={"file": ("test.png", self._TINY_PNG, "image/png")},
+            headers=tenant_headers,
+        )
+        assert r.status_code == 200
+        d = r.json()
+        assert "url" in d
+        assert d["url"].startswith("/uploads/")
+
+    def test_list_photos_returns_uploaded(self, client, tenant_headers, fresh_asset):
+        client.post(
+            f"/api/assets/{fresh_asset['id']}/photos",
+            files={"file": ("a.png", self._TINY_PNG, "image/png")},
+            headers=tenant_headers,
+        )
+        r = client.get(f"/api/assets/{fresh_asset['id']}/photos", headers=tenant_headers)
+        assert r.status_code == 200
+        assert len(r.json()) >= 1
+
+    def test_delete_photo(self, client, tenant_headers, fresh_asset):
+        photo = client.post(
+            f"/api/assets/{fresh_asset['id']}/photos",
+            files={"file": ("del.png", self._TINY_PNG, "image/png")},
+            headers=tenant_headers,
+        ).json()
+        r = client.delete(f"/api/assets/{fresh_asset['id']}/photos/{photo['id']}", headers=tenant_headers)
+        assert r.status_code == 200
+        remaining = [p["id"] for p in client.get(f"/api/assets/{fresh_asset['id']}/photos", headers=tenant_headers).json()]
+        assert photo["id"] not in remaining
+
+    def test_reject_non_image_type(self, client, tenant_headers, fresh_asset):
+        r = client.post(
+            f"/api/assets/{fresh_asset['id']}/photos",
+            files={"file": ("hack.exe", b"MZ", "application/octet-stream")},
+            headers=tenant_headers,
+        )
+        assert r.status_code == 400
+
+    def test_photos_require_auth(self, client, fresh_asset, tenant):
+        r = client.get(
+            f"/api/assets/{fresh_asset['id']}/photos",
+            headers={"host": f"{tenant['slug']}.localhost"},
+        )
+        assert r.status_code == 401
+
+
+class TestAssetMaintenance:
+    """Tests for /api/assets/{id}/maintenance CRUD and dashboard overdue count."""
+
+    def _headers(self, auth, tenant):
+        return {**auth, "host": f"{tenant['slug']}.localhost"}
+
+    def test_create_maintenance_returns_id(self, client, tenant_headers, fresh_asset):
+        from datetime import date, timedelta
+        due = (date.today() + timedelta(days=7)).isoformat()
+        r = client.post(f"/api/assets/{fresh_asset['id']}/maintenance", json={
+            "title": "Annual inspection", "maintenance_type": "Inspection",
+            "due_date": due, "notes": "Check all fans",
+        }, headers=tenant_headers)
+        assert r.status_code == 200
+        d = r.json()
+        assert d["status"] == "scheduled"
+        assert "id" in d
+
+    def test_list_maintenance(self, client, tenant_headers, fresh_asset):
+        from datetime import date, timedelta
+        due = (date.today() + timedelta(days=5)).isoformat()
+        client.post(f"/api/assets/{fresh_asset['id']}/maintenance",
+                    json={"title": "Filter change", "due_date": due}, headers=tenant_headers)
+        r = client.get(f"/api/assets/{fresh_asset['id']}/maintenance", headers=tenant_headers)
+        assert r.status_code == 200
+        items = r.json()
+        assert any(m["title"] == "Filter change" for m in items)
+
+    def test_complete_maintenance(self, client, tenant_headers, fresh_asset):
+        from datetime import date, timedelta
+        due = (date.today() + timedelta(days=3)).isoformat()
+        m = client.post(f"/api/assets/{fresh_asset['id']}/maintenance",
+                        json={"title": "Inspection", "due_date": due}, headers=tenant_headers).json()
+        r = client.patch(f"/api/assets/{fresh_asset['id']}/maintenance/{m['id']}/complete",
+                         headers=tenant_headers)
+        assert r.status_code == 200
+        assert r.json()["status"] == "done"
+
+    def test_overdue_status_on_list(self, client, tenant_headers, fresh_asset):
+        from datetime import date, timedelta
+        past_due = (date.today() - timedelta(days=2)).isoformat()
+        m = client.post(f"/api/assets/{fresh_asset['id']}/maintenance",
+                        json={"title": "Overdue task", "due_date": past_due},
+                        headers=tenant_headers).json()
+        items = client.get(f"/api/assets/{fresh_asset['id']}/maintenance",
+                           headers=tenant_headers).json()
+        task = next(i for i in items if i["id"] == m["id"])
+        assert task["status"] == "overdue"
+
+    def test_delete_maintenance(self, client, tenant_headers, fresh_asset):
+        from datetime import date, timedelta
+        due = (date.today() + timedelta(days=10)).isoformat()
+        m = client.post(f"/api/assets/{fresh_asset['id']}/maintenance",
+                        json={"title": "To delete", "due_date": due}, headers=tenant_headers).json()
+        r = client.delete(f"/api/assets/{fresh_asset['id']}/maintenance/{m['id']}",
+                          headers=tenant_headers)
+        assert r.status_code == 200
+        remaining = [i["id"] for i in client.get(
+            f"/api/assets/{fresh_asset['id']}/maintenance", headers=tenant_headers).json()]
+        assert m["id"] not in remaining
+
+    def test_maintenance_requires_auth(self, client, fresh_asset, tenant):
+        r = client.get(f"/api/assets/{fresh_asset['id']}/maintenance",
+                       headers={"host": f"{tenant['slug']}.localhost"})
+        assert r.status_code == 401
