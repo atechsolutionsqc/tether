@@ -46,5 +46,6 @@ backend/data/*.sqlite
 *~
 
 # Claude Code local context (not for GitHub)
-.claude/context/
-.claude/settings.local.json
+.claude/
+
+PASSPORT_INTEGRATION.md
