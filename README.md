@@ -562,4 +562,4 @@ Set `BACKUP_ENABLED=true` and the `BACKUP_S3_*` variables in `.env` to enable sc
 
 ## License
 
-MIT
+Apache License 2.0
